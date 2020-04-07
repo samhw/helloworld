@@ -1,12 +1,3 @@
-#
-# User-defined substitutions:
-#   _CLOUDSDK_COMPUTE_ZONE=us-central1-c 
-#   _CLOUDSDK_CONTAINER_CLUSTER=cluster-1
-#   _GITHUB_USERNAME=samhw
-#   _KMS_KEY=mykey 
-#   _KMS_KEYRING=mykeyring
-#
-
 steps:
   # Build the helloworld container image.
   - name: 'gcr.io/cloud-builders/docker'
