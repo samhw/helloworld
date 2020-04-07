@@ -1,10 +1,10 @@
 #
 # User-defined substitutions:
-#   _CLOUDSDK_COMPUTE_ZONE
-#   _CLOUDSDK_CONTAINER_CLUSTER
-#   _GITHUB_USERNAME
-#   _KMS_KEY 
-#   _KMS_KEYRING
+#   _CLOUDSDK_COMPUTE_ZONE=us-central1-c 
+#   _CLOUDSDK_CONTAINER_CLUSTER=cluster-1
+#   _GITHUB_USERNAME=samhw
+#   _KMS_KEY=mykey 
+#   _KMS_KEYRING=mykeyring
 #
 
 steps:
