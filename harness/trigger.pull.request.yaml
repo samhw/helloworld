@@ -1,0 +1,32 @@
+trigger:
+  name: Pull Request
+  identifier: Pull_Request
+  enabled: true
+  encryptedWebhookSecretIdentifier: ""
+  description: ""
+  tags: {}
+  orgIdentifier: VIS
+  stagesToExecute: []
+  projectIdentifier: VDIS
+  pipelineIdentifier: vdissavemicroservicebuild
+  source:
+    type: Webhook
+    spec:
+      type: Github
+      spec:
+        type: PullRequest
+        spec:
+          connectorRef: pcimsavemicroservice
+          autoAbortPreviousExecutions: true
+          payloadConditions:
+            - key: targetBranch
+              operator: In
+              value: develop,pipeline/PCIMEMVP-15745-file-exclusion-step-save
+          headerConditions: []
+          actions:
+            - Open
+            - Reopen
+            - Synchronize
+  pipelineBranchName: <+trigger.branch>
+  inputSetRefs:
+    - Pull_Request
