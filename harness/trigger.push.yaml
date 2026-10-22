@@ -42,3 +42,50 @@ we can save it in
 .harness/triggers/vdissavemicroservicebuild/Push_Develop_Footest.yaml. 
 It gets reviewed in PRs and tracked in history, but Harness doesn't read it, 
 so you still paste it into Triggers → YAML yourself. 
+
+
+=========
+
+Append a new stage at the end of stages:, after the build_and_test stage and at the same indentation as its - stage::
+
+Who should get the build-finished email? The deployment pipeline already emails these two lists for keystore alerts.
+Same two lists
+VISOpsManager@uscis.dhs.gov and OIT-VER-FALCON-VDIS-Cerberus@uscis.dhs.gov, as used in vdissavemicroservicedeployment.yaml
+A Harness user group
+Send to a user group configured in Harness (you'll give the group identifier)
+
+
+
+=========
+
+    - stage:
+        name: Notify
+        identifier: notify
+        type: Custom
+        spec:
+          execution:
+            steps:
+              - step:
+                  type: Email
+                  name: Build Finished Email
+                  identifier: build_finished_email
+                  timeout: 10m
+                  spec:
+                    to: 12624paseo@gmail.com
+                    cc: ""
+                    subject: "[<+pipeline.stages.build_and_test.status>] vdis-save-micro-service-build on <+pipeline.branch>"
+                    body: |-
+                      Build: <+pipeline.executionUrl>
+                      Branch: <+pipeline.branch>
+                      Commit: <+trigger.commitSha>
+                      Build and Test status: <+pipeline.stages.build_and_test.status>
+                      Triggered by: <+pipeline.triggeredBy.name> (<+pipeline.triggeredBy.triggerIdentifier>)
+        when:
+          pipelineStatus: All
+          condition: <+pipeline.triggeredBy.triggerIdentifier> == "Push_Develop_Footest"
+        failureStrategies:
+          - onFailure:
+              errors:
+                - AllErrors
+              action:
+                type: Ignore
