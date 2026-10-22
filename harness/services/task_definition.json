@@ -1,0 +1,98 @@
+{
+    "containerDefinitions": [
+        {
+            "name": "<+serviceVariables.TARGET_DEPLOY_ENV>-savems",
+            "image": "nexus-gss.uscis.dhs.gov:8111/vis-pcs-save-micro-service:<+serviceVariables.IMAGE_TAG>",
+            "cpu": "<+serviceVariables.CPU>",
+            "memory": "<+serviceVariables.MEMORY>",
+            "portMappings": [
+                {
+                    "containerPort": 8080,
+                    "hostPort": 0,
+                    "protocol": "tcp"
+                }
+            ],
+            "essential": true,
+            "command": [],
+            "environment": [
+                {
+                    "name": "AWS_REGION",
+                    "value": "us-east-1"
+                },
+                {
+                    "name": "DEBUG_DISABLE_AUTHZ",
+                    "value": ""
+                },
+                {
+                    "name": "TARGET_DEPLOY_ENV",
+                    "value": "<+serviceVariables.TARGET_DEPLOY_ENV>"
+                },
+                {
+                    "name": "TARGET_AWS_ACCOUNT",
+                    "value": "<+serviceVariables.TARGET_AWS_ACCOUNT>"
+                },
+                {
+                    "name": "AWS_DEFAULT_REGION",
+                    "value": "us-east-1"
+                },
+                {
+                    "name": "SECRETS_LOCATION",
+                    "value": "/app/secrets"
+                },
+                {
+                    "name": "PIPELINE_INSTANCE_ID",
+                    "value": "<+serviceVariables.TIMESTAMP>-<+serviceVariables.IMAGE_TAG>"
+                },
+                {
+                    "name": "APP_SPRING_PROFILE",
+                    "value": "<+serviceVariables.TARGET_DEPLOY_ENV>,secrets"
+                },
+                {
+                    "name": "APP_VERSION",
+                    "value": "<+serviceVariables.IMAGE_TAG>"
+                },
+                {
+                    "name": "NEW_RELIC_APP_NAME",
+                    "value": "<+serviceVariables.NEW_RELIC_APP_NAME>"
+                },
+                {
+                    "name": "APP_LOG_LEVEL",
+                    "value": "<+serviceVariables.APP_LOG_LEVEL>"
+                },
+                {
+                    "name": "APP_SPRING_PROFILE_LOCATIONS",
+                    "value": "classpath:/,file:/app/secrets/"
+                }
+            ],
+            "mountPoints": [],
+            "volumesFrom": [],
+            "logConfiguration": {
+                "logDriver": "syslog",
+                "options": {
+                    "tag": "docker/<+serviceVariables.TARGET_DEPLOY_ENV>-savems/{{.ID}}/{{.ImageName}}"
+                },
+                "secretOptions": []
+            },
+            "systemControls": []
+        }
+    ],
+    "family": "<+serviceVariables.TARGET_DEPLOY_ENV>-savems",
+    "taskRoleArn": "<+serviceVariables.TASK_ROLE_ARN>",
+    "volumes": [],
+    "requiresAttributes": [
+        {
+            "name": "com.amazonaws.ecs.capability.logging-driver.syslog"
+        },
+        {
+            "name": "com.amazonaws.ecs.capability.docker-remote-api.1.19"
+        },
+        {
+            "name": "com.amazonaws.ecs.capability.task-iam-role"
+        }
+    ],
+    "placementConstraints": [],
+    "compatibilities": [
+        "EXTERNAL",
+        "EC2"
+    ]
+}

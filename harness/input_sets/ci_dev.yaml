@@ -1,0 +1,115 @@
+inputSet:
+  name: ci_dev
+  tags: {}
+  identifier: ci_dev
+  orgIdentifier: VIS
+  projectIdentifier: VDIS
+  pipeline:
+    identifier: vdissavemicroserviceci
+    properties:
+      ci:
+        codebase:
+          build:
+            type: branch
+            spec:
+              branch: <+pipeline.branch>
+    stages:
+      - stage:
+          identifier: CI_Stage
+          type: CI
+          spec:
+            execution:
+              steps:
+                - step:
+                    identifier: Java_Unit_Tests
+                    type: Run
+                    spec:
+                      envVariables:
+                        args: clean bootJar test jacocoTestReport
+                - stepGroup:
+                    identifier: Docker_Build_and_Push
+                    template:
+                      templateInputs:
+                        variables:
+                          - name: NEXUS_REPO_PORT
+                            type: String
+                            value: "8111"
+                          - name: NEXUS_USER
+                            type: String
+                            value: ${ngSecretManager.obtain("hashicorpvault://vdis_prod_vault_connector/platforms/nexus/vis-pcs-micro-service-svc#user", 585739034)}
+                          - name: NEXUS_PW
+                            type: String
+                            value: ${ngSecretManager.obtain("hashicorpvault://vdis_prod_vault_connector/platforms/nexus/vis-pcs-micro-service-svc#pass", 585739034)}
+                          - name: IMAGE_NAME
+                            type: String
+                            value: <+input>.default(<+pipeline.properties.ci.codebase.repoName>)
+                            default: <+pipeline.properties.ci.codebase.repoName>
+                          - name: DOCKERFILE_FILE_PATH
+                            type: String
+                            value: ./.harness/pipelines/containers/DockerfileBuild
+                            # default: ./DockerfileBuild
+                          - name: DOCKERFILE_BUILD_PATH
+                            type: String
+                            value: <+input>.default(.)
+                            default: .
+                          - name: DOCKERFILE_BUILD_FLAGS
+                            type: String
+                            value: <+input>.default( )
+                            default: " "
+                          - name: DOCKER_PUSH_OVERRIDE
+                            type: String
+                            value: <+input>.default(false).allowedValues(false,true)
+                            default: "false"
+                - stepGroup:
+                    identifier: Test_Suite
+                    steps:
+                      - step:
+                          identifier: AWS_Role_Assumption
+                          template:
+                            templateInputs:
+                              type: Run
+                              spec:
+                                envVariables:
+                                  ROLE_TO_ASSUME: arn:aws:iam::790298132094:role/JenkinsInstanceRole
+                - parallel:
+                    - stepGroup:
+                        identifier: Code_Scans
+                        template:
+                          templateInputs:
+                            steps:
+                              - parallel:
+                                  - stepGroup:
+                                      identifier: SonarqubeScan
+                                      template:
+                                        templateInputs:
+                                          identifier: SonarScan
+                                          variables:
+                                            - name: sonarqube_project_name
+                                              type: String
+                                              value: <+pipeline.properties.ci.codebase.repoName>
+                                            - name: sonarqube_cli_flags
+                                              type: String
+                                              value: "\"\""
+                                            - name: sonarqube_project_key
+                                              type: String
+                                              value: <+pipeline.properties.ci.codebase.repoName>
+                                  - stepGroup:
+                                      identifier: NexusIQ_CLI_Scan
+                                      template:
+                                        templateInputs:
+                                          variables:
+                                            - name: nexusiq_app_id
+                                              type: String
+                                              value: <+pipeline.properties.ci.codebase.repoName>
+                                            - name: scan_folder_trgt
+                                              type: String
+                                              value: ./src
+                    - stepGroup:
+                        identifier: Prisma_Scan
+                        template:
+                          templateInputs:
+                            variables:
+                              - name: TARGET_IMAGE
+                                type: String
+                                value: <+pipeline.stages.CI_Stage.spec.execution.steps.Docker_Build_and_Push.steps.Docker_Build.output.outputVariables.FULL_IMAGE_NAME>
+  isInlineHCEntity: false

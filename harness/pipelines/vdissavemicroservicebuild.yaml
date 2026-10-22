@@ -1,0 +1,869 @@
+pipeline:
+  name: vdis-save-micro-service-build
+  identifier: vdissavemicroservicebuild
+  projectIdentifier: VDIS
+  orgIdentifier: VIS
+  tags: {}
+  properties:
+    ci:
+      codebase:
+        connectorRef: org.VIS_GIT_Organization_Connector
+        repoName: pcim-save-micro-service
+        build:
+          type: branch
+          spec:
+            branch: <+pipeline.branch>
+        depth: 0
+  variables:
+    - name: DEVELOP_BRANCH
+      type: String
+      value: develop
+    - name: MASTER_BRANCH
+      type: String
+      value: master
+    - name: AWS_S3_TEST_RESULTS_PREFIX
+      type: String
+      value: s3://vdis-nonprod/vdis-microservices-build-reports/Save
+    - name: STAT_LOOKUP_KEYZ
+      type: String
+      value: <+input>.stat_lookup_keys
+      default: IMAGE_NAME,BUILD_VERSION,STAT_GIT_REVISION_URL,STAT_GIT_TAG_URL,STAT_NEXUS_ASSET_URL,BRANCH_NAME,BUILD_URL,GIT_SHA
+    - name: STAT_GIT_REVISION_URL
+      type: String
+      value: https://git.uscis.dhs.gov/USCIS/pcim-save-micro-service/commit/${GIT_SHA}
+    - name: STAT_GIT_TAG_URL
+      type: String
+      value: https://git.uscis.dhs.gov/USCIS/pcim-save-micro-service/releases/tag/${BUILD_VERSION}
+    - name: STAT_NEXUS_ASSET_URL
+      type: String
+      value: https://nexus-gss.uscis.dhs.gov/nexus/#browse/browse:vis-pcs-micro-service:v2/vis-pcs-save-micro-service/tags/$BUILD_VERSION
+    - name: AWS_ASSUME_ROLE
+      type: String
+      description: ""
+      required: true
+      value: <+<+pipeline.variables.AWS_ENV>=="prod"?"arn:aws:iam::992588962742:role/JenkinsInstanceRole":"arn:aws:iam::790298132094:role/JenkinsInstanceRole">
+    - name: PUBLISH_COMMON_LIBRARY
+      type: String
+      value: <+input>.allowedValues(true,false)
+      default: "false"
+    - name: DELIVERY_STATS_SCRIPT
+      type: String
+      value: ./.harness/pipelines/stats/delivery_stats.py
+    - name: PIPELINE_SCRIPTS_FOLDER
+      type: String
+      value: ./.harness/pipelines/scripts
+    - name: HARNES_PIPELINE_IMAGE_IAC
+      type: String
+      value: harnesspipelineimage:v3.2.0
+      description: Lastest image for IAC tools
+      required: true
+  stages:
+    - stage:
+        name: Setup
+        identifier: Setup
+        type: CI
+        spec:
+          cloneCodebase: true
+          caching:
+            enabled: false
+            override: true
+            paths: []
+          sharedPaths:
+            - /run
+            - /var/run
+            - /shared/customer_artifacts/certificates
+          buildIntelligence:
+            enabled: false
+          infrastructure:
+            type: KubernetesDirect
+            spec:
+              connectorRef: org.orgprodkubernetesvis
+              namespace: harness-delegate-ng
+              serviceAccountName: harness-vis-delegate
+              automountServiceAccountToken: true
+              tolerations:
+                - effect: NoSchedule
+                  key: Group-Name
+                  operator: Equal
+                  value: karp-critical-cicd
+              nodeSelector:
+                eid-platform/node-lifecycle: karp-critical-cicd
+              imagePullPolicy: IfNotPresent
+              harnessImageConnectorRef: account.acct_ecr_eid_connector_prod
+              os: Linux
+          execution:
+            steps:
+              - step:
+                  type: Run
+                  name: Set Metadata
+                  identifier: set_metadata
+                  spec:
+                    connectorRef: org.viscoreinfraservicesnexus
+                    image: <+variable.org.Harness_Docker_Base_Latest>
+                    shell: Bash
+                    command: |-
+                      GIT_SHA=$(git rev-parse --short=9 HEAD)
+                      BUILD_VERSION=$(date +%Y%m%d%H%M%S)-${GIT_SHA}
+                      echo "GIT_SHA: ${GIT_SHA}"
+                      echo "BUILD_VERSION: ${BUILD_VERSION}"
+                    outputVariables:
+                      - name: BUILD_VERSION
+        description: ""
+    - stage:
+        type: CI
+        name: Build and Test
+        identifier: build_and_test
+        caching:
+          enabled: false
+          paths: []
+        spec:
+          connectorRef: org.viscoreinfraservicesnexus
+          execution:
+            steps:
+              - step:
+                  type: Run
+                  name: Check Files
+                  identifier: check_files
+                  spec:
+                    envVariables:
+                      GH_TOKEN: <+secrets.getValue("org.PET_Github_Serviceaccount_PAT")>
+                      ORG: USCIS
+                      REPO: pcim-save-micro-service
+                    connectorRef: org.viscoreinfraservicesnexus
+                    image: <+variable.org.Harness_Docker_Base_Latest>
+                    shell: Bash
+                    command: |-
+                      CODE_CHANGED=true
+                      PR="<+trigger.prNumber>"
+
+                      NON_CODE='(\.(md|markdown|txt|gitignore|gitkeep|editorconfig|png|jpe?g|gif|svg|webp|ico|bmp|pdf)$|(^|/)(LICENSE|COPYING|NOTICE|AUTHORS|CONTRIBUTORS|CHANGELOG|CHANGES|CODEOWNERS|SECURITY)(\..*)?$|(^|/)README(\..*)?$)'
+
+                      if [ "$PR" = "null" ] || [ -z "$PR" ]; then
+                        echo "No PR number (push or manual build) - running full pipeline."
+                      elif ! RESP=$(curl -fsS \
+                            -H "Authorization: Bearer $GH_TOKEN" \
+                            -H "Accept: application/vnd.github+json" \
+                            "https://git.uscis.dhs.gov/api/v3/repos/$ORG/$REPO/pulls/$PR/files?per_page=100"); then
+                        echo "GitHub API call failed - failing open."
+                      else
+                        COUNT=$(echo "$RESP" | jq 'length' 2>/dev/null || echo 0)
+                        FILES=$(echo "$RESP" | jq -r '.[].filename' 2>/dev/null || true)
+                        if [ "$COUNT" -eq 0 ] || [ -z "$FILES" ]; then
+                          echo "Empty file list - failing open."
+                        elif [ "$COUNT" -ge 100 ]; then
+                          echo "Hit the 100-file page limit - failing open."
+                        elif echo "$FILES" | grep -qivE "$NON_CODE"; then
+                          echo "Non-doc changes detected."
+                        else
+                          echo "Docs-only PR - skipping build."
+                          export CODE_CHANGED=false
+                        fi
+                      fi
+                      echo "CODE_CHANGED=$CODE_CHANGED"
+                    outputVariables:
+                      - name: CODE_CHANGED
+                        value: CODE_CHANGED
+                        type: String
+              - step:
+                  type: Run
+                  name: Generate Build Stats
+                  identifier: generate_build_stats
+                  when:
+                    stageStatus: Success
+                    condition: <+execution.steps.check_files.output.outputVariables.CODE_CHANGED> == "true"
+                  spec:
+                    connectorRef: org.viscoreinfraservicesnexus
+                    image: <+variable.org.Harness_Docker_Base_Latest>
+                    shell: Bash
+                    command: |-
+                      echo "INFO: Start stats build..."
+                      python3 -Bu <+pipeline.variables.DELIVERY_STATS_SCRIPT> --statkeys "${STAT_LOOKUP_KEYZ}" --report build_stats --write ./build.stats
+                      echo "INFO: End stats build"
+                    reports:
+                      type: JUnit
+                      spec:
+                        paths:
+                          - /build.stats
+              - stepGroup:
+                  when:
+                    stageStatus: Success
+                    condition: <+execution.steps.check_files.output.outputVariables.CODE_CHANGED> == "true"
+                  steps:
+                    - parallel:
+                        - step:
+                            name: Determine Image Tag
+                            identifier: Determine_Image_Tag
+                            template:
+                              templateRef: org.Determine_Image_Tag
+                        - step:
+                            name: DIND
+                            identifier: DIND
+                            template:
+                              templateRef: org.DIND
+                              versionLabel: v1.1.2
+                    - step:
+                        type: RunTests
+                        name: Run Linting
+                        identifier: Run_Linting
+                        spec:
+                          connectorRef: org.viscoreinfraservicesnexus
+                          image: <+variable.org.Harness_Docker_Base_Latest>
+                          language: Java
+                          buildTool: Gradle
+                          args: staticAnalysis
+                          runOnlySelectedTests: true
+                          reports:
+                            type: JUnit
+                            spec:
+                              paths:
+                                - "**/*.xml"
+                          enableTestSplitting: false
+                        failureStrategies:
+                          - onFailure:
+                              errors:
+                                - AllErrors
+                              action:
+                                type: Abort
+                      contextType: Pipeline
+                    - step:
+                        type: Run
+                        spec:
+                          connectorRef: org.viscoreinfraservicesnexus
+                          image: <+pipeline.variables.HARNES_PIPELINE_IMAGE_IAC>
+                          shell: Bash
+                          command: |-
+                            echo '=============================='
+                            echo 'Starting Docker Build'
+                            echo '=============================='
+                            echo
+                            FULL_IMAGE_NAME="nexus-gss.uscis.dhs.gov:<+stepGroup.variables.NEXUS_REPO_PORT>/vis-pcs-save-micro-service:${build_version}"
+                            echo "FULL_IMAGE_NAME: ${FULL_IMAGE_NAME}"
+                            docker build --no-cache -t ${FULL_IMAGE_NAME} -f <+stepGroup.variables.DOCKERFILE_FILE_PATH> <+stepGroup.variables.DOCKERFILE_BUILD_FLAGS> <+stepGroup.variables.DOCKERFILE_BUILD_PATH>
+
+                            echo "Image Size:"
+                            docker inspect -f '{{ .Size }}' ${FULL_IMAGE_NAME} | numfmt --to=si
+                          privileged: false
+                          envVariables:
+                            build_version: <+pipeline.stages.Setup.spec.execution.steps.set_metadata.output.outputVariables.BUILD_VERSION>
+                          outputVariables:
+                            - name: FULL_IMAGE_NAME
+                          imagePullPolicy: IfNotPresent
+                          resources:
+                            limits:
+                              memory: 4Gi
+                        timeout: 30m
+                        description: Builds an image based on a specified Dockerfile.
+                        name: Docker Build
+                        identifier: Docker_Build
+                    - step:
+                        name: AWS Role Assumption
+                        identifier: AWS_Role_Assumption
+                        template:
+                          templateRef: account.AWS_Role_Assumption
+                          versionLabel: "2.0"
+                          gitBranch: main
+                          templateInputs:
+                            type: Run
+                            spec:
+                              envVariables:
+                                ROLE_TO_ASSUME: <+pipeline.variables.AWS_ASSUME_ROLE>
+                      contextType: Pipeline
+                    - step:
+                        type: Run
+                        name: Run Unit Tests
+                        identifier: run_unit_tests
+                        spec:
+                          connectorRef: org.viscoreinfraservicesnexus
+                          image: <+variable.org.Harness_Docker_Base_Latest>
+                          shell: Bash
+                          command: ./gradlew test jacocoTestReport
+                          reports:
+                            type: JUnit
+                            spec:
+                              paths:
+                                - ./build/test-results/test/TEST*.xml
+                        failureStrategies:
+                          - onFailure:
+                              errors:
+                                - AllErrors
+                              action:
+                                type: ManualIntervention
+                                spec:
+                                  timeout: 15m
+                                  onTimeout:
+                                    action:
+                                      type: MarkAsFailure
+                      contextType: Pipeline
+                    - step:
+                        type: Run
+                        name: Integration Tests
+                        identifier: integration_tests
+                        spec:
+                          connectorRef: org.viscoreinfraservicesnexus
+                          image: <+variable.org.Harness_Docker_Base_Latest>
+                          shell: Bash
+                          command: |-
+                            export PATH="$PATH:$PWD"
+                            <+pipeline.variables.PIPELINE_SCRIPTS_FOLDER>/integrationTest.sh integrationTest
+                          reports:
+                            type: JUnit
+                            spec:
+                              paths:
+                                - ./build/reports/tests/integrationTest/**
+                                - ./env.export
+                        failureStrategies:
+                          - onFailure:
+                              errors:
+                                - AllErrors
+                              action:
+                                type: ManualIntervention
+                                spec:
+                                  timeout: 15m
+                                  onTimeout:
+                                    action:
+                                      type: MarkAsFailure
+                      contextType: Pipeline
+                    - step:
+                        type: Run
+                        name: Acceptance Test
+                        identifier: acceptance_tests
+                        spec:
+                          connectorRef: org.viscoreinfraservicesnexus
+                          image: <+variable.org.Harness_Docker_Base_Latest>
+                          shell: Bash
+                          command: |-
+                            export PATH="$PATH:$PWD"
+                            <+pipeline.variables.PIPELINE_SCRIPTS_FOLDER>/acceptanceTest.sh acceptanceTest @pcssmoke
+                          reports:
+                            type: JUnit
+                            spec:
+                              paths:
+                                - ./build/reports/tests/acceptanceTest/**
+                        failureStrategies:
+                          - onFailure:
+                              errors:
+                                - AllErrors
+                              action:
+                                type: ManualIntervention
+                                spec:
+                                  timeout: 15m
+                                  onTimeout:
+                                    action:
+                                      type: MarkAsFailure
+                      contextType: Pipeline
+                    - step:
+                        type: Run
+                        name: Move Certs
+                        identifier: Move_Certs
+                        spec:
+                          connectorRef: org.viscoreinfraservicesnexus
+                          image: <+variable.org.Harness_Docker_Base_Latest>
+                          shell: Bash
+                          command: cp /etc/ssl/certs/ca-certificates.crt /shared/customer_artifacts/certificates
+                          imagePullPolicy: IfNotPresent
+                        timeout: 1m
+                        failureStrategies:
+                          - onFailure:
+                              errors:
+                                - AllErrors
+                              action:
+                                type: ManualIntervention
+                                spec:
+                                  timeout: 15m
+                                  onTimeout:
+                                    action:
+                                      type: Ignore
+                      contextType: Pipeline
+                    - parallel:
+                        - stepGroup:
+                            name: SonarqubeScan
+                            identifier: SonarqubeScan
+                            template:
+                              templateRef: account.SonarqubeScan
+                              gitBranch: main
+                              templateInputs:
+                                variables:
+                                  - name: sonarqube_project_name
+                                    type: String
+                                    value: <+pipeline.properties.ci.codebase.repoName>
+                                  - name: sonarqube_access_token
+                                    type: String
+                                    value: <+secrets.getValue("org.hashicorpvault://vis_nonprod_vault_connector/platforms/sonarqube#api_token")>
+                                  - name: sonarqube_cli_flags
+                                    type: String
+                                    value: "-Dsonar.branch.name=<+pipeline.branch>"
+                                  - name: sonarqube_project_key
+                                    type: String
+                                    value: <+pipeline.properties.ci.codebase.repoName>
+                                  - name: sonarqube_step_timeout
+                                    type: String
+                                    value: 15m
+                                  - name: sonarServer
+                                    type: String
+                                    value: <+input>.default(<+variable.account.acct_sonarqube_url>)
+                                  - name: failOnSeverity
+                                    type: String
+                                    value: <+input>.default(high).selectOneFrom(Critical,Medium,Info,Low,high)
+                          contextType: Pipeline
+                        - stepGroup:
+                            name: NexusIQ CLI Scan
+                            identifier: NexusIQ_CLI_Scan
+                            template:
+                              templateRef: account.NexusIQ_CLI_Scan
+                              templateInputs:
+                                variables:
+                                  - name: nexusiq_organization_id
+                                    type: String
+                                    value: VIS
+                                  - name: nexusiq_app_id
+                                    type: String
+                                    value: <+pipeline.properties.ci.codebase.repoName>
+                                  - name: nexusiq_access_id
+                                    type: String
+                                    value: <+secrets.getValue("org.hashicorpvault://vis_nonprod_vault_connector/platforms/nexusiq#username")>
+                                  - name: nexusiq_secret
+                                    type: String
+                                    value: <+secrets.getValue("org.hashicorpvault://vis_nonprod_vault_connector/platforms/nexusiq#password")>
+                                  - name: scan_folder_trgt
+                                    type: String
+                                    value: ./src
+                                  - name: nexusiq_cli_version
+                                    type: String
+                                    value: 2.10.0-02
+                                    default: 2.13.1
+                                  - name: fail_severity
+                                    type: String
+                                    value: <+input>.default(High).selectOneFrom(Critical,High,Medium,Low,Info,None)
+                                  - name: ingest_timeout
+                                    type: String
+                                    value: <+input>.default(10m)
+                        - stepGroup:
+                            name: Checkmarx Scan
+                            identifier: Checkmarx_Scan
+                            template:
+                              templateRef: org.Checkmarx_Scan
+                              versionLabel: v2.0.0
+                              gitBranch: main
+                              templateInputs:
+                                variables:
+                                  - name: PROJECT_TAGS
+                                    type: String
+                                    value: VDIS
+                                    default: <+pipeline.repo>
+                                  - name: SCAN_FILTERS
+                                    type: String
+                                    value: <+input>.default(!.git,!venv,!test,!node_modules,!target)
+                    - stepGroup:
+                        steps:
+                          - step:
+                              type: Run
+                              spec:
+                                connectorRef: org.viscoreinfraservicesnexus
+                                image: <+variable.org.Harness_Docker_Base_Latest>
+                                shell: Bash
+                                command: |-
+                                  echo '=============================='
+                                  echo 'Starting Prisma Cloud Scan'
+                                  echo '=============================='
+                                  echo
+                                  echo "----- Command: docker ps -a"
+                                  docker ps -a
+                                  echo
+
+                                  curl -sk -u "${TWISTLOCK_USER}:${TWISTLOCK_PASS}" \
+                                    --output ./twistcli ${TWISTLOCK_URL}/api/v1/util/twistcli
+                                  chmod +x ./twistcli
+                                  chown $(whoami) ./twistcli
+
+                                  output=$(./twistcli images scan --address "${TWISTLOCK_URL}" -u "${TWISTLOCK_USER}" -p "${TWISTLOCK_PASS}"  "${IMAGE}")
+                                  echo "output: ${output}"
+                                  echo
+                                  IMAGE_ID=$(echo ${output} | awk -F= '{ print $NF }')
+                                  echo 'completed setting the output'
+                                  echo "IMAGE_ID: ${IMAGE_ID}"
+                                  SCAN_ID=$(wget --auth-no-challenge --user="${TWISTLOCK_USER}" --password="${TWISTLOCK_PASS}" "${TWISTLOCK_URL}/api/v1/scans?imageID=${IMAGE_ID}" -O - | jq -r .[0]._id)
+                                  echo "SCAN_ID: ${SCAN_ID}"
+                                privileged: false
+                                envVariables:
+                                  TWISTLOCK_URL: <+ <+stepGroup.variables.PRISMA_ENDPOINT> == 'prod'?'https://twistlock.uscis.dhs.gov':'https://twistlock-nonprod.uscis.dhs.gov'>
+                                  TWISTLOCK_USER: <+ <+stepGroup.variables.PRISMA_ENDPOINT> == 'prod'?<+stepGroup.variables.PROD_TWISTLOCK_USER>:<+stepGroup.variables.NONPROD_TWISTLOCK_USER>>
+                                  TWISTLOCK_PASS: <+ <+stepGroup.variables.PRISMA_ENDPOINT> == 'prod'?<+stepGroup.variables.PROD_TWISTLOCK_PASS>:<+stepGroup.variables.NONPROD_TWISTLOCK_PASS>>
+                                  JOB_NAME: <+pipeline.identifier>
+                                  BUILD: <+pipeline.sequenceId>
+                                  IMAGE: <+stepGroup.variables.TARGET_IMAGE>
+                                outputVariables:
+                                  - name: IMAGE_ID
+                                    type: String
+                                    value: IMAGE_ID
+                                  - name: SCAN_ID
+                                    type: String
+                                    value: SCAN_ID
+                                imagePullPolicy: IfNotPresent
+                                runAsUser: "0"
+                                resources:
+                                  limits:
+                                    memory: <+input>.default(1Gi)
+                                    cpu: <+input>.default(400m)
+                              when:
+                                stageStatus: Success
+                                privileged: true
+                                imagePullPolicy: IfNotPresent
+                                runAsUser: "0"
+                              timeout: 10m
+                              name: Twistlock Scan Image
+                              identifier: Twistlock_Scan_Image
+                          - step:
+                              type: PrismaCloud
+                              name: Prisma Cloud Publish Report
+                              identifier: Prisma_Cloud_Publish_Report
+                              spec:
+                                mode: extraction
+                                config: default
+                                target:
+                                  type: container
+                                  detection: manual
+                                  name: <+stepGroup.variables.TARGET_IMAGE>
+                                  variant: <+codebase.branch>
+                                advanced:
+                                  log:
+                                    level: info
+                                  fail_on_severity: high
+                                settings:
+                                  verify_ssl: "false"
+                                  bypass_ssl_check: "true"
+                                  product_scan_id: <+stepGroup.steps.Twistlock_Scan_Image.output.outputVariables.SCAN_ID>
+                                  product_access_id: <+stepGroup.steps.Twistlock_Scan_Image.spec.envVariables.TWISTLOCK_USER>
+                                  product_domain: <+stepGroup.steps.Twistlock_Scan_Image.spec.envVariables.TWISTLOCK_URL>
+                                  container_tag: <+execution.steps.Docker_Build.spec.envVariables.IMAGE_TAG>
+                                privileged: true
+                                imagePullPolicy: IfNotPresent
+                                auth:
+                                  access_token: <+stepGroup.steps.Twistlock_Scan_Image.spec.envVariables.TWISTLOCK_PASS>
+                                  access_id: <+stepGroup.steps.Twistlock_Scan_Image.spec.envVariables.TWISTLOCK_USER>
+                                  domain: <+stepGroup.steps.Twistlock_Scan_Image.spec.envVariables.TWISTLOCK_URL>
+                                tool:
+                                  image_name: <+stepGroup.variables.TARGET_IMAGE>
+                              timeout: 20m
+                              failureStrategies:
+                                - onFailure:
+                                    errors:
+                                      - AllErrors
+                                    action:
+                                      type: ManualIntervention
+                                      spec:
+                                        timeout: 15m
+                                        onTimeout:
+                                          action:
+                                            type: Ignore
+                        stageType: CI
+                        variables:
+                          - name: TARGET_IMAGE
+                            type: String
+                            value: <+pipeline.stages.build_and_test.spec.execution.steps.Docker_Build_and_Push.steps.Docker_Build.output.outputVariables.FULL_IMAGE_NAME>
+                            description: The identifier of the image to scan.
+                            required: true
+                          - name: PRISMA_ENDPOINT
+                            type: String
+                            value: <+input>.default(nonprod).selectOneFrom(nonprod,prod)
+                            description: The target endpoint to upload the Prisma scans to once the scans have completed.
+                            required: true
+                            default: nonprod
+                          - name: NONPROD_TWISTLOCK_USER
+                            type: String
+                            value: <+secrets.getValue('org.hashicorpvault://vis_nonprod_vault_connector/platforms/prisma_cloud#username')>
+                            description: ""
+                            required: false
+                          - name: NONPROD_TWISTLOCK_PASS
+                            type: String
+                            value: <+secrets.getValue('org.hashicorpvault://vis_nonprod_vault_connector/platforms/prisma_cloud#password')>
+                            description: ""
+                            required: false
+                          - name: PROD_TWISTLOCK_USER
+                            type: String
+                            value: <+secrets.getValue('org.hashicorpvault://vis_prod_vault_connector/platforms/prisma_cloud#username')>
+                            description: ""
+                            required: false
+                          - name: PROD_TWISTLOCK_PASS
+                            type: String
+                            value: <+secrets.getValue('org.hashicorpvault://vis_prod_vault_connector/platforms/prisma_cloud#password')>
+                            description: ""
+                            required: false
+                        name: Prisma Twistlock Scan and Reports
+                        identifier: Prisma_Twistlock_Scan_and_Reports
+                    - step:
+                        type: Run
+                        spec:
+                          connectorRef: org.viscoreinfraservicesnexus
+                          image: <+pipeline.variables.HARNES_PIPELINE_IMAGE_IAC>
+                          shell: Bash
+                          command: |-
+                            echo '=============================='
+                            echo 'Starting Docker Push'
+                            echo '=============================='
+                            trap 'docker logout "nexus-gss.uscis.dhs.gov:<+stepGroup.variables.NEXUS_REPO_PORT>" || true' EXIT
+                            printf '%s' "<+stepGroup.variables.NEXUS_PW>" | docker login \
+                            -u "<+stepGroup.variables.NEXUS_USER>" --password-stdin \
+                            nexus-gss.uscis.dhs.gov:<+stepGroup.variables.NEXUS_REPO_PORT>
+
+                            docker push <+stepGroup.steps.Docker_Build.output.outputVariables.FULL_IMAGE_NAME>
+                          imagePullPolicy: IfNotPresent
+                        timeout: 5m
+                        description: Pushes a built Docker image to Nexus.
+                        name: Docker Push
+                        identifier: Docker_Push
+                        when:
+                          stageStatus: Success
+                          condition: <+pipeline.properties.ci.codebase.build.spec.branch> == "main" || <+pipeline.properties.ci.codebase.build.spec.branch> == "master" || <+pipeline.properties.ci.codebase.build.spec.branch> == "develop" || <+stepGroup.variables.DOCKER_PUSH_OVERRIDE> == "true"
+                      contextType: Pipeline
+                    - step:
+                        type: Run
+                        name: Perform Version Increment
+                        identifier: Perform_Version_increments
+                        when:
+                          stageStatus: Success
+                          condition: <+pipeline.variables.PUBLISH_COMMON_LIBRARY> == "true" && <+pipeline.branch> == "develop"
+                        spec:
+                          connectorRef: vdis_nexus_connector_read_only
+                          image: vdis-api-clients-harness-builder:latest
+                          shell: Bash
+                          command: |-
+                            lib='ver-save-common'
+
+                            echo "INFO: Incrementing version and publishing"
+
+                            version_args_publish="-Prelease.stage=final -Prelease.overriddenBranchName=main"
+
+                            version=$(./gradlew currentVersion ${version_args_publish} -PprojectName=rsavecommon | grep "Project version" | awk '{print $NF}')
+
+                            echo "$lib current version: $version"
+
+                            commitMessage=$(git log -1 --pretty=%B | tr '[:upper:]' '[:lower]')
+                            echo "$commitMessage"
+
+                            # Update version if explicitly set by commit message, otherwise default to minor version bump.
+                            effectiveBranchForIncrement=''
+
+                            case "${commitMessage}" in
+                              "[epic]"*)
+                                echo "INFO: [epic] prefix detected → MAJOR version increment (X.0.0)"
+                                effectiveBranchForIncrement='-Prelease.overriddenBranchName=epic/epic'
+                                ;;
+                              "[feature]"*)
+                                echo "INFO: [feature] prefix detected → MINOR version increment (X.Y.0)"
+                                effectiveBranchForIncrement='-Prelease.overriddenBranchName=feature/feature'
+                                ;;
+                              "[bugfix]"*)
+                                echo "INFO: [bugfix] prefix detected → PATCH version increment (X.Y.Z)"
+                                effectiveBranchForIncrement='-Prelease.overriddenBranchName=bugfix/bugfix'
+                                ;;
+                              "[release]"*)
+                                echo "INFO: [release] prefix detected → MAJOR version increment (X.0.0)"
+                                effectiveBranchForIncrement='-Prelease.overriddenBranchName=release/release'
+                                ;;
+                              "[hotfix]"*)
+                                echo "INFO: [bugfix] prefix detected → PATCH version increment (X.Y.Z)"
+                                effectiveBranchForIncrement='-Prelease.overriddenBranchName=hotfix/hotfix'
+                                ;;
+                              *)
+                                echo "WARN: No [epic]/[release]/[feature]/[bugfix]/[hotfix] prefix found"
+                                echo "WARN: Using default Axion release behavior (likely patch increment)"
+                                ;;
+                            esac
+
+                            ./gradlew release -Prelease.disableChecks -Prelease.pushTagsOnly -PprojectName=rsavecommon -Prelease.customUsername="svc-vis-pet" -Prelease.customPassword="<+secrets.getValue("org.PET_Github_Serviceaccount_PAT")>" $effectiveBranchForIncrement
+
+                            echo "INFO: Gradle release finished"
+
+                            # build big obnoxious string that contains nexus coords for marker.
+                            # Example Nexus Coords: gov/dhs/uscis/pcim/pcs/ver-pcis-client/3.0.5/ver-pcis-client-3.0.5.pom
+                            nexusCoords="${group}/${lib}/${version}/${lib}-${version}.pom"
+                            echo "$lib nexusCoords: $nexusCoords"
+
+                            # Check if artifact is already in nexus.
+                            # This will prevent us from uploading artifacts that already exists on
+                            # main when they have not been issued a new version.
+                            echo "INFO: check if exists"
+                            responseStatus=$(wget -S -O/dev/null https://nexus-gss.uscis.dhs.gov/nexus/repository/PCIM-maven-internal/gov/dhs/uscis/pcim/pcs${nexusCoords}  2>&1 | grep HTTP/ | awk '{print $2}')
+                            echo "INFO: ${responseStatus} returned from nexus"
+
+                            if [[ "$responseStatus" == "200" ]]; then
+                              echo "INFO: ${version} artifact already found in nexus, skipping publish"
+                              exit 0
+                            else
+                              echo "INFO: No ${version} version exists in nexus yet"
+                            fi
+
+                            ./gradlew publish -PprojectName=rsavecommon ${version_args_publish} -Prelease.forceVersion=${version} -PpublishToNexus=true -PrepoUsername="<+secrets.getValue("hashicorpvault://vdis_prod_vault_connector/platforms/nexus/svc-sid-jenkins#user")>" -PrepoPassword='<+secrets.getValue("hashicorpvault://vdis_prod_vault_connector/platforms/nexus/svc-sid-jenkins#pass")>' --info
+
+                            echo "INFO: Gradle publish to nexus finished"
+
+                        contextType: Pipeline
+                    - step:
+                        type: Run
+                        name: Publish Snapshots
+                        identifier: Publish_Clients
+                        spec:
+                          connectorRef: vdis_nexus_connector_read_only
+                          image: vdis-api-clients-harness-builder:latest
+                          shell: Bash
+                          command: |-
+                            lib='ver-save-common'
+
+                            echo "INFO: Publishing SNAPSHOT version for ${lib}"
+
+                            # Call ./gradlew command for scm current version then parse out result.
+                            version=$(./gradlew currentVersion -PprojectName=rsavecommon | grep "Project version" | awk '{print $NF}')
+
+                            echo "$lib current version: $version"
+
+                            # build big obnoxious string that contains nexus coords for marker.
+                            # Example Nexus Coords: gov/dhs/uscis/pcim/pcs/ver-pcis-client/3.0.5/ver-pcis-client-3.0.5.pom
+                            nexusCoords="${group}/${lib}/${version}/${lib}-${version}.pom"
+                            echo "$lib nexusCoords: $nexusCoords"
+
+                            # Check if artifact is already in nexus.
+                            # This will prevent us from uploading artifacts that already exists on
+                            # main when they have not been issued a new version.
+                            echo "INFO: check if exists"
+                            responseStatus=$(wget -S -O/dev/null https://nexus-gss.uscis.dhs.gov/nexus/repository/PCIM-maven-internal/gov/dhs/uscis/pcim/pcs${nexusCoords}  2>&1 | grep HTTP/ | awk '{print $2}')
+                            echo "INFO: ${responseStatus} returned from nexus"
+
+                            if [[ "$responseStatus" == "200" ]]; then
+                              echo 'INFO: SNAPSHOT artifact found in nexus, skipping publish'
+                              exit 0
+                            else
+                              echo "INFO: No SNAPSHOT version exists in nexus yet"
+                            fi
+
+                            if [[ ($version == *"SNAPSHOT") ]] ; then
+                              echo "About to publish SNAPSHOT"
+
+                              ./gradlew publish -PprojectName=rsavecommon -PpublishToNexus=true -PrepoUsername="<+secrets.getValue("hashicorpvault://vdis_prod_vault_connector/platforms/nexus/svc-sid-jenkins#user")>" -PrepoPassword='<+secrets.getValue("hashicorpvault://vdis_prod_vault_connector/platforms/nexus/svc-sid-jenkins#pass")>' --info
+                            else
+                              echo "INFO: SNAPSHOT was NOT published for version: ${version}"
+                            fi
+                        when:
+                          stageStatus: Success
+                          condition: <+pipeline.variables.PUBLISH_COMMON_LIBRARY> == "true" && <+pipeline.branch> != "develop" && <+pipeline.branch> != "master"
+                      contextType: Pipeline
+
+                  variables:
+                    - name: NEXUS_REPO_PORT
+                      type: String
+                      value: "8111"
+                      description: The port of the Nexus repo to push the new Docker image into.
+                      required: true
+                    - name: NEXUS_USER
+                      type: String
+                      value: <+secrets.getValue("hashicorpvault://vdis_prod_vault_connector/platforms/nexus/vis-pcs-micro-service-svc#user")>
+                      description: Team-specific Nexus username.
+                      required: true
+                    - name: NEXUS_PW
+                      type: String
+                      value: <+secrets.getValue("hashicorpvault://vdis_prod_vault_connector/platforms/nexus/vis-pcs-micro-service-svc#pass")>
+                      description: Password to allow a push to team-specific Nexus repo.
+                      required: true
+                    - name: IMAGE_NAME
+                      type: String
+                      value: <+pipeline.properties.ci.codebase.repoName>
+                      description: The name of the new image to build that omits repo and tagging info.
+                      required: true
+                      default: vis-pcs-save-micro-service
+                    - name: DOCKERFILE_FILE_PATH
+                      type: String
+                      value: ./.harness/pipelines/containers/DockerfileBuild
+                      description: The relative path leading up to and including the Dockerfile to build.
+                      required: true
+                      default: ./Dockerfile
+                    - name: DOCKERFILE_BUILD_PATH
+                      type: String
+                      value: .
+                      description: The path to the directory that the targeted Dockerfile will build in.
+                      required: true
+                      default: .
+                    - name: DOCKERFILE_BUILD_FLAGS
+                      type: String
+                      value: ""
+                      description: Any extra Dockerfile flags to pass to the 'docker build' command.
+                      required: false
+                      default: " "
+                    - name: DOCKER_PUSH_OVERRIDE
+                      type: String
+                      value: <+input>.default(true).allowedValues(false,true)
+                      description: Allows a working branch to push the new Dockerfile to Nexus when set to "true".
+                      required: false
+                      default: "true"
+                  stageType: CI
+                  name: Docker Build and Push
+                  identifier: Docker_Build_and_Push
+              - step:
+                  type: Run
+                  name: Upload Reports
+                  identifier: upload_reports
+                  when:
+                    stageStatus: Success
+                    condition: <+execution.steps.check_files.output.outputVariables.CODE_CHANGED> == "true"
+                  spec:
+                    connectorRef: org.viscoreinfraservicesnexus
+                    image: <+variable.org.Harness_Docker_Base_Latest>
+                    shell: Bash
+                    command: |-
+                      AWS_S3_BUCKET="<+pipeline.variables.AWS_S3_TEST_RESULTS_PREFIX>"
+                      BUILD_VERSION="<+pipeline.stages.Setup.spec.execution.steps.set_metadata.output.outputVariables.BUILD_VERSION>"
+                      ROLE_TO_ASSUME="<+pipeline.variables.AWS_ASSUME_ROLE>"
+                      echo "Build version from Setup stage: <+pipeline.stages.Setup.spec.execution.steps.set_metadata.output.outputVariables.BUILD_VERSION>"
+                      echo "BUILD_VERSION: ${BUILD_VERSION}"
+                      echo "AWS Assumed Role = ${ROLE_TO_ASSUME}"
+                      aws s3 sync ./build/reports/ ${AWS_S3_BUCKET}/${BUILD_VERSION}/reports
+                    envVariables:
+                      ROLE_TO_ASSUME: <+pipeline.variables.AWS_ASSUME_ROLE>
+                  failureStrategies:
+                    - onFailure:
+                        errors:
+                          - AllErrors
+                        action:
+                          type: ManualIntervention
+                          spec:
+                            timeout: 15m
+                            onTimeout:
+                              action:
+                                type: Ignore
+            infrastructure:
+              useFromStage: Setup
+            cloneCodebase: true
+            sharedPaths:
+              - /run
+              - /var/run
+              - /shared/customer_artifacts/certificates
+            caching:
+              enabled: false
+              paths: []
+            buildIntelligence:
+              enabled: false
+          description: ""
+          failureStrategies:
+            - onFailure:
+                errors:
+                  - AllErrors
+                action:
+                  type: Ignore
+          infrastructure:
+            useFromStage: Setup
+          cloneCodebase: true
+          sharedPaths:
+            - /run
+            - /var/run
+            - /shared/customer_artifacts/certificates
+            - /env.export
+          caching:
+            enabled: false
+            paths: []
+          buildIntelligence:
+            enabled: false
+        description: ""
+        failureStrategies:
+          - onFailure:
+              errors:
+                - AllErrors
+              action:
+                type: Ignore

@@ -1,0 +1,30 @@
+inputSet:
+  name: Pull Request
+  identifier: Pull_Request
+  orgIdentifier: VIS
+  projectIdentifier: VDIS
+  pipeline:
+    identifier: vdissavemicroservicebuild
+    variables:
+      - name: STAT_LOOKUP_KEYZ
+        type: String
+        value: IMAGE_NAME,BUILD_VERSION,STAT_GIT_REVISION_URL,STAT_GIT_TAG_URL,STAT_NEXUS_ASSET_URL,BRANCH_NAME,BUILD_URL,GIT_SHA
+        default: IMAGE_NAME,BUILD_VERSION,STAT_GIT_REVISION_URL,STAT_GIT_TAG_URL,STAT_NEXUS_ASSET_URL,BRANCH_NAME,BUILD_URL,GIT_SHA
+      - name: publish_common_library_to_nexus
+        type: String
+        value: "false"
+        default: "false"
+    stages:
+      - stage:
+          identifier: build_and_test
+          type: CI
+          spec:
+            execution:
+              steps:
+                - stepGroup:
+                    identifier: Docker_Build_and_Push
+                    variables:
+                      - name: DOCKER_PUSH_OVERRIDE
+                        type: String
+                        value: "true"
+                        default: "true"

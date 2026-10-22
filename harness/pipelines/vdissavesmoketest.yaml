@@ -1,0 +1,317 @@
+pipeline:
+  name: vdis-save-jmeter-test
+  identifier: vdissavesmoketest
+  projectIdentifier: VDIS
+  orgIdentifier: VIS
+  tags: {}
+  properties:
+    ci:
+      codebase:
+        connectorRef: org.VIS_GIT_Organization_Connector
+        repoName: pcim-save-micro-service
+        build:
+          type: branch
+          spec:
+            branch: <+pipeline.branch>
+  variables:
+    - name: ENVIRONMENT_NAME
+      type: String
+      description: Environment to run pipeline.
+      required: true
+      value: <+input>.allowedValues(devtest,systest,externaltest,preview,prod)
+      default: devtest
+    - name: TEST_WARM_STACK
+      type: String
+      description: Environment to run pipeline.
+      required: true
+      value: <+input>.allowedValues(true,false)
+      default: "false"
+    - name: AWS_ENV
+      type: String
+      description: ""
+      required: true
+      value: <+<+pipeline.variables.ENVIRONMENT_NAME>=~["externaltest", "preview", "prod"]?"prod":"nonprod">
+    - name: AWS_ASSUME_ROLE
+      type: String
+      description: ""
+      required: true
+      value: <+<+pipeline.variables.AWS_ENV>=="prod"?"arn:aws:iam::992588962742:role/JenkinsInstanceRole":"arn:aws:iam::790298132094:role/JenkinsInstanceRole">
+    - name: CLIENT_ID
+      type: String
+      value: <+secrets.getValue("hashicorpvault://vdis_<+pipeline.variables.AWS_ENV>_vault_connector/config/vis/apigee#AUTH_CLIENT_ID")>
+    - name: CLIENT_SECRET
+      type: String
+      value: <+secrets.getValue("hashicorpvault://vdis_<+pipeline.variables.AWS_ENV>_vault_connector/config/vis/apigee#AUTH_CLIENT_SECRET")>
+    - name: PATH_PREFIX
+      type: String
+      value: <+<+pipeline.variables.TEST_WARM_STACK>=="true"?"<+pipeline.stages.JMeter_Test.spec.execution.steps.Download_Test.output.outputVariables.PATH_PREFIX_SPEC>/warm":"<+pipeline.stages.JMeter_Test.spec.execution.steps.Download_Test.output.outputVariables.PATH_PREFIX_SPEC>">
+    - name: jmeterJmxFilePath
+      type: String
+      value: <+input>.allowedValues(savems-acceptance-tests.jmx,savems-smoke-test.jmx)
+      default: savems-acceptance-tests.jmx
+      required: true
+    - name: HEADER_MESSAGE_ID
+      type: String
+      value: VDIS_JMeter_Harness_<+pipeline.variables.ENVIRONMENT_NAME>_Acceptance_Test
+    - name: jmeterFlags
+      type: String
+      value: "-JREQUEST_HOST=<+pipeline.stages.JMeter_Test.spec.execution.steps.Download_Test.output.outputVariables.REQUEST_HOST> -JPATH_PREFIX=<+pipeline.variables.PATH_PREFIX> -JAUTH_CLIENT_ID=<+pipeline.variables.CLIENT_ID> -JAUTH_CLIENT_SECRET=<+pipeline.variables.CLIENT_SECRET> -JHEADER_MESSAGE_ID=<+pipeline.variables.HEADER_MESSAGE_ID>"
+  stages:
+    - stage:
+        name: JMeter Test
+        identifier: JMeter_Test
+        description: ""
+        type: CI
+        spec:
+          cloneCodebase: true
+          caching:
+            enabled: false
+            override: true
+            paths: []
+          sharedPaths:
+            - /run
+            - /var/run
+            - /shared/customer_artifacts/certificates
+          buildIntelligence:
+            enabled: false
+          infrastructure:
+            type: KubernetesDirect
+            spec:
+              connectorRef: org.orgprodkubernetesvis
+              namespace: harness-delegate-ng
+              serviceAccountName: harness-vis-delegate
+              automountServiceAccountToken: true
+              nodeSelector: {}
+              imagePullPolicy: IfNotPresent
+              harnessImageConnectorRef: account.acct_ecr_eid_connector_prod
+              os: Linux
+          execution:
+            steps:
+              - step:
+                  name: AWS Role Assumption
+                  identifier: AWS_Role_Assumption
+                  template:
+                    templateRef: account.AWS_Role_Assumption
+                    versionLabel: "2.0"
+                    gitBranch: main
+                    templateInputs:
+                      type: Run
+                      spec:
+                        envVariables:
+                          ROLE_TO_ASSUME: <+pipeline.variables.AWS_ASSUME_ROLE>
+              - step:
+                  type: Run
+                  name: Download Test
+                  identifier: Download_Test
+                  spec:
+                    connectorRef: org.viscoreinfraservicesnexus
+                    image: ubuntu_22.04_java_21_corretto_jmeter:5.6.3
+                    shell: Bash
+                    command: |-
+                      jmeterJmxFilePath=<+pipeline.variables.jmeterJmxFilePath>
+                      if [[ "$jmeterJmxFilePath" == "savems-smoke-test.jmx" ]]; then
+                          crossing-go get s3://vdis-<+pipeline.variables.AWS_ENV>/vdis-testdata/smoketest/savems-smoke-test.jmx
+                          echo Downloading Smoke Tests
+                      elif [[ "$jmeterJmxFilePath" == "savems-acceptance-tests.jmx" ]]; then
+                          crossing-go get s3://vdis-<+pipeline.variables.AWS_ENV>/vdis-testdata/acceptancetest/savems-acceptance-tests.jmx
+                          echo Downloading Acceptance Tests
+                      fi
+                      # Define the environment variable
+                      ENVIRONMENT=<+pipeline.variables.ENVIRONMENT_NAME>
+                      REQUEST_HOST="uscis-dev.api-nonprod.uscis.dhs.gov"
+                      PATH_PREFIX_SPEC=vdis/save/<+pipeline.variables.ENVIRONMENT_NAME>
+                      # Set REQUEST_HOST and PATH_PREFIX based on the environment
+                      if [[ "$ENVIRONMENT" == "preview" || "$ENVIRONMENT" == "externaltest" ]]; then
+                          REQUEST_HOST="uscis-int.api.uscis.dhs.gov"
+                          PATH_PREFIX_SPEC=vdis/save/<+pipeline.variables.ENVIRONMENT_NAME>
+                      elif [[ "$ENVIRONMENT" == "prod" ]]; then
+                          REQUEST_HOST="uscis-prod.api.uscis.dhs.gov"
+                          PATH_PREFIX_SPEC="vdis/save"
+                      fi
+                    outputVariables:
+                      - name: REQUEST_HOST
+                        type: String
+                        value: REQUEST_HOST
+                      - name: PATH_PREFIX_SPEC
+                        type: String
+                        value: PATH_PREFIX_SPEC
+                  description: Downloading the test file from AWS.
+              - step:
+                  type: Run
+                  name: Execute Test
+                  identifier: Execute_Test
+                  spec:
+                    connectorRef: org.viscoreinfraservicesnexus
+                    image: ubuntu_22.04_java_21_corretto_jmeter:5.6.3
+                    shell: Bash
+                    command: |-
+                      echo '=============================='
+                      echo 'Starting Jmeter Tests'
+                      echo '=============================='
+                      echo
+                      start_time=$(date +"%Y-%m-%dT%H:%M:%S.%3N%z")
+                      echo $start_time
+                      cat > junit-converter.xsl <<EOF
+                      <?xml version="1.0" encoding="UTF-8"?>
+                      <xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform" version="1.0">
+                          <xsl:output method="xml" indent="yes" encoding="UTF-8"/>
+                          <!--
+                                       https://jmeter.apache.org/usermanual/listeners.html#attributes
+
+                              JMeter Attribute Meanings - If enabled in JMeter
+
+                              by          Bytes
+                              sby         Sent Bytes
+                              de          Data encoding
+                              dt          Data type
+                              ec          Error count (0 or 1, unless multiple samples are aggregated)
+                              hn          Hostname where the sample was generated
+                              it          Idle Time = time not spent sampling (milliseconds) (generally 0)
+                              lb          Label
+                              lt          Latency = time to initial response (milliseconds) - not all samplers support this
+                              ct          Connect Time = time to establish the connection (milliseconds) - not all samplers support this
+                              na          Number of active threads for all thread groups
+                              ng          Number of active threads in this group
+                              rc          Response Code (e.g. 200)
+                              rm          Response Message (e.g. OK)
+                              s           Success flag (true/false)
+                              sc          Sample count (1, unless multiple samples are aggregated)
+                              t           Elapsed time (milliseconds)
+                              tn          Thread Name
+                              ts          timeStamp (milliseconds since midnight Jan 1, 1970 UTC)
+                              varname     Value of the named variable
+                           -->
+                          <xsl:template match="/testResults">
+                              <testsuites>
+                                  <testsuite>
+                                      <xsl:attribute name="id">1</xsl:attribute>
+                                      <xsl:attribute name="name">JMeter test</xsl:attribute>
+                                      <xsl:attribute name="package">JMeter test</xsl:attribute>
+                                      <xsl:attribute name="hostname">Harness</xsl:attribute>
+                                      <xsl:attribute name="tests"><xsl:value-of select="count(*)"/></xsl:attribute>
+                                      <xsl:attribute name="failures"><xsl:value-of select="count(*[./assertionResult/failure[text() = 'true']])"/></xsl:attribute>
+                                      <xsl:attribute name="errors"><xsl:value-of select="count(*[./assertionResult/error[text() = 'true']])"/></xsl:attribute>
+                                      <xsl:attribute name="time"><xsl:value-of select="sum(*/@t) div 1000"/></xsl:attribute>
+                                      <properties></properties>
+                                      <xsl:for-each select="*">
+                                          <testcase>
+                                              <xsl:attribute name="classname"><xsl:value-of select="name()"/></xsl:attribute>
+                                              <xsl:attribute name="name"><xsl:value-of select="@lb"/></xsl:attribute>
+                                              <xsl:attribute name="time"><xsl:value-of select="@t div 1000"/></xsl:attribute>
+                                              <xsl:if test="assertionResult[./failure = 'true']">
+                                                  <failure>
+                                                      <!-- show only the first failure message (if multiple) as the JUnit schema only supports one failure node -->
+                                                      <xsl:attribute name="message"><xsl:value-of select="assertionResult[./failure = 'true']/failureMessage"/></xsl:attribute>
+                                                      <!-- show only the first failure type (if multiple) as the JUnit schema only supports one failure node -->
+                                                      <xsl:attribute name="type"><xsl:value-of select="assertionResult[./failure = 'true']/name"/></xsl:attribute>
+                                                      <xsl:if test="responseData">
+                                                          <xsl:value-of select="responseData"/>
+                                                      </xsl:if>
+                                                  </failure>
+                                              </xsl:if>
+                                              <xsl:if test="assertionResult[./error = 'true']">
+                                                  <error>
+                                                      <!-- show only the first failure message (if multiple) as the JUnit schema only supports one failure node -->
+                                                      <xsl:attribute name="message"><xsl:value-of select="assertionResult[./error = 'true']/failureMessage"/></xsl:attribute>
+                                                      <!-- show only the first failure type (if multiple) as the JUnit schema only supports one failure node -->
+                                                      <xsl:attribute name="type"><xsl:value-of select="assertionResult[./error = 'true']/name"/></xsl:attribute>
+                                                      <xsl:if test="responseData">
+                                                          <xsl:value-of select="responseData"/>
+                                                      </xsl:if>
+                                                  </error>
+                                              </xsl:if>
+                                          </testcase>
+                                      </xsl:for-each>
+                                      <system-out></system-out>
+                                      <system-err></system-err>
+                                  </testsuite>
+                              </testsuites>
+                          </xsl:template>
+                      </xsl:stylesheet>
+                      EOF
+                      for FILE in $jmeterJmxFilePath
+                      do
+                          FILENAME=${FILE%.*}
+                          FILENAME=${FILENAME##*/}
+                          export TESTNAME=$FILENAME
+                          jmeter -Jjmeter.save.saveservice.output_format=xml -n -t $FILE -f -l result-$FILENAME.jtl $jmeterFlags || true
+                          xsltproc --stringparam testName $FILENAME -o result-$FILENAME.xml junit-converter.xsl result-$FILENAME.jtl
+                      #    echo "-------------------- XML output begin --------------------"
+                      #    cat result-$FILENAME.xml
+                      #    echo "--------------------- XML output end ---------------------"
+                      #    done
+
+                      echo STARTING REPORT
+                      ls result-*.xml
+                      cat result-*.xml
+                      TOTAL_TESTS=$(grep -c 'testcase classname' result-*.xml)
+                      echo Total test ran $TOTAL_TESTS
+                      FAILED_TESTS=$(grep -o 'failures="[0-9]*"' result-*.xml | grep -o '[0-9]*')
+                      echo Failed Tests $FAILED_TESTS
+                      PASSING_RATE=$(( 100 - (($FAILED_TESTS * 100) / $TOTAL_TESTS) ))
+                      echo $TOTAL_TESTS tests executed.
+                      if [ "$TOTAL_TESTS" -lt "1" ]; then
+                          echo Marking pipeline as failed.
+                          # exit 1
+                      fi
+                      echo $(( TOTAL_TESTS - FAILED_TESTS)) tests passed.
+                      echo Passing rate $PASSING_RATE%.
+                      if [ "$PASSING_RATE" -lt "$PASSING_RATE_THESHOLD" ]; then
+                          echo $FAILED_TESTS tests failed which is below $PASSING_RATE_THESHOLD% passing threshold. Marking pipeline as failed.
+                          # exit 1
+                      fi
+
+                      echo STARTING VALIDATION TIMELINE
+                      REQUEST_HOST=<+pipeline.stages.JMeter_Test.spec.execution.steps.Download_Test.output.outputVariables.REQUEST_HOST>
+                      ENVIRONMENT_NAME=<+pipeline.variables.ENVIRONMENT_NAME>
+                      end_time=$(date +"%Y-%m-%dT%H:%M:%S.%3N%z")
+                      jmeterJmxFilePath=<+pipeline.variables.jmeterJmxFilePath>
+                      PATH_PREFIX=<+pipeline.variables.PATH_PREFIX>
+                      HEADER_MESSAGE_ID=<+pipeline.variables.HEADER_MESSAGE_ID>
+
+                      if [[ "$FAILED_TESTS" == "0" ]]; then
+                          echo "************************* SUCCESS *************************"
+                          echo "Test Suite Ran:         $jmeterJmxFilePath"
+                          echo "PSA URL tested:         $REQUEST_HOST"
+                          echo "Path Prefix:            $PATH_PREFIX"
+                          echo "Expected errors:        0"
+                          echo "Errors received:        $FAILED_TESTS"
+                          echo "Environment:            $ENVIRONMENT_NAME"
+                          echo "Test start time:        $start_time"
+                          echo "Test end time:          $end_time"
+                          echo "Message ID:             $HEADER_MESSAGE_ID"
+                          echo "***********************************************************"
+                      else
+                          echo "************************* FAILURE *************************"
+                          echo "Test Suite Ran:         $jmeterJmxFilePath"
+                          echo "PSA URL tested:         $REQUEST_HOST"
+                          echo "Path Prefix:            $PATH_PREFIX"
+                          echo "Expected errors:        0"
+                          echo "Errors received:        $FAILED_TESTS"
+                          echo "Environment:            $ENVIRONMENT_NAME"
+                          echo "Test start time:        $start_time"
+                          echo "Test end time:          $end_time"
+                          echo "Message ID:             $HEADER_MESSAGE_ID"
+                          echo "***********************************************************"
+                          exit 1
+                      fi
+
+                      done
+                    reports:
+                      type: JUnit
+                      spec:
+                        paths:
+                          - result-*.xml
+                    envVariables:
+                      jmeterJmxFilePath: <+pipeline.variables.jmeterJmxFilePath>
+                      jmeterFlags: <+pipeline.variables.jmeterFlags>
+                      PASSING_RATE_THESHOLD: "100"
+                    imagePullPolicy: IfNotPresent
+                    resources:
+                      limits:
+                        memory: 2G
+                        cpu: "1.5"
+                  timeout: 2h
+                identifier: JMeter_Tests
+                versionLabel: v0.0.1
+                contextType: Pipeline

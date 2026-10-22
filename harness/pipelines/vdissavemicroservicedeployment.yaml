@@ -1,0 +1,619 @@
+pipeline:
+  name: vdis-save-micro-service-deployment
+  identifier: vdissavemicroservicedeployment
+  projectIdentifier: VDIS
+  orgIdentifier: VIS
+  tags: {}
+  stages:
+    - stage:
+        name: CI pcim-save-micro-service
+        identifier: CI_pcimsavemicroservice
+        description: ""
+        type: Pipeline
+        spec:
+          org: VIS
+          pipeline: vdissavemicroservicebuild
+          project: VDIS
+          inputSetReferences:
+            - CI_save_build_and_push
+        when:
+          pipelineStatus: Success
+          condition: <+pipeline.variables.RUN_CI> == "true"
+    - stage:
+        name: Deployment Prep
+        identifier: Deployment_Prep
+        description: ""
+        type: CI
+        spec:
+          cloneCodebase: true
+          caching:
+            enabled: false
+            override: true
+            paths: []
+          infrastructure:
+            type: KubernetesDirect
+            spec:
+              connectorRef: org.orgprodkubernetesvis
+              namespace: harness-delegate-ng
+              serviceAccountName: harness-vis-delegate
+              automountServiceAccountToken: true
+              tolerations:
+                - effect: NoSchedule
+                  key: Group-Name
+                  operator: Equal
+                  value: karp-critical-cicd
+              nodeSelector:
+                eid-platform/node-lifecycle: karp-critical-cicd
+              imagePullPolicy: IfNotPresent
+              harnessImageConnectorRef: account.acct_ecr_eid_connector_prod
+              os: Linux
+          execution:
+            steps:
+              - step:
+                  type: Run
+                  name: Determine Deployment Info
+                  identifier: Determine_Deployment_Info
+                  spec:
+                    connectorRef: org.viscoreinfraservicesnexus
+                    image: alpinepipelineimage:v3.5.3
+                    shell: Sh
+                    command: |-
+                      TIMESTAMP=$(date +%Y%m%d%H%M%S)
+                      echo "TIMESTAMP = $TIMESTAMP"
+
+                      SAVEMS_DEPLOYED="<+pipeline.variables.DEPLOY_SAVEMS>"
+                      EXTENDED_FLOW_DEPLOYED="<+pipeline.variables.DEPLOY_EXTENDED_FLOW>"
+                      DEPLOYMENT_NOTES=""
+                      if [ "$SAVEMS_DEPLOYED" = true ] && [ "$EXTENDED_FLOW_DEPLOYED" = true ]; then
+                          DEPLOYMENT_NOTES="SAVEMS and Extended Flow deployed"
+                      elif [ "$SAVEMS_DEPLOYED" = true ]; then
+                          DEPLOYMENT_NOTES="SAVEMS deployed"
+                      elif [ "$EXTENDED_FLOW_DEPLOYED" = true ]; then
+                          DEPLOYMENT_NOTES="Extended Flow deployed"
+                      else
+                          DEPLOYMENT_NOTES="None"
+                      fi
+
+                      echo "$DEPLOYMENT_NOTES"
+                    outputVariables:
+                      - name: TIMESTAMP
+                        type: String
+                        value: TIMESTAMP
+                      - name: DEPLOYMENT_NOTES
+                        type: String
+                        value: DEPLOYMENT_NOTES
+          buildIntelligence:
+            enabled: false
+        variables:
+          - name: BUILD_ENV
+            type: String
+            description: ""
+            required: false
+            value: ""
+          - name: BUILD_IMAGE
+            type: String
+            description: ""
+            required: false
+            value: ""
+    - stage:
+        name: ECS Deploy
+        identifier: ECS_Deploy
+        description: ""
+        type: Deployment
+        spec:
+          deploymentType: ECS
+          service:
+            serviceRef: vdissavemicroservice
+            serviceInputs:
+              serviceDefinition:
+                type: ECS
+                spec:
+                  variables:
+                    - name: IMAGE_TAG
+                      type: String
+                      value: <+input>
+                    - name: APP_LOG_LEVEL
+                      type: String
+                      value: <+input>.default(DEBUG).allowedValues(TRACE,DEBUG,INFO,WARN,ERROR)
+                    - name: TASK_ROLE_ARN
+                      type: String
+                      default: arn:aws:iam::790298132094:role/devtest-savems20241030114025133200000006
+                      value: <+input>.default(arn:aws:iam::790298132094:role/devtest-savems20241030114025133200000006).allowedValues(arn:aws:iam::790298132094:role/devtest-savems20241030114025133200000006,arn:aws:iam::790298132094:role/systest-savems20240909223735147100000004,arn:aws:iam::992588962742:role/externaltest-savems20240611221346498100000004,arn:aws:iam::992588962742:role/preview-savems20241015123531741800000004,arn:aws:iam::992588962742:role/prod-savems20240402175636933800000004)
+                    - name: CPU
+                      type: String
+                      value: <+input>.allowedValues(256,1024)
+                    - name: MEMORY
+                      type: String
+                      value: <+input>.allowedValues(1536,3000)
+                    - name: TARGET_DEPLOY_ENV
+                      type: String
+                      value: <+input>.allowedValues(devtest,systest,externaltest,preview,prod)
+                    - name: TARGET_AWS_ACCOUNT
+                      type: String
+                      value: <+input>.allowedValues(NonProd,Prod)
+                    - name: TIMESTAMP
+                      type: String
+                      value: <+pipeline.stages.Deployment_Prep.spec.execution.steps.Determine_Deployment_Info.output.outputVariables.TIMESTAMP>
+                    - name: NEW_RELIC_APP_NAME
+                      type: String
+                      value: <+input>.allowedValues(devtest-savems (nonprod),systest-savems (nonprod),externaltest-savems (prod),preview-savems (prod),prod-savems (prod))
+                    - name: SERVICE_NAME
+                      type: String
+                      value: <+input>
+                    - name: DESIRED_COUNT
+                      type: String
+                      value: <+input>
+          environment:
+            environmentRef: <+input>
+            deployToAll: false
+            environmentInputs: <+input>
+            serviceOverrideInputs: <+input>
+            infrastructureDefinitions: <+input>
+          execution:
+            steps:
+              - stepGroup:
+                  name: Blue Green Deployment
+                  identifier: blueGreenDepoyment
+                  variables:
+                    - name: PROD_LISTENER
+                      type: String
+                      value: <+input>
+                    - name: PROD_LISTENER_RULE
+                      type: String
+                      value: <+input>
+                    - name: STAGE_LISTENER
+                      type: String
+                      value: <+input>
+                    - name: STAGE_LISTENER_RULE
+                      type: String
+                      value: <+input>
+                  steps:
+                    - step:
+                        name: ECS Blue Green Create Service
+                        identifier: EcsBlueGreenCreateService
+                        type: EcsBlueGreenCreateService
+                        timeout: 10m
+                        spec:
+                          loadBalancer: <+input>
+                          prodListener: <+stepGroup.variables.PROD_LISTENER>
+                          prodListenerRuleArn: <+stepGroup.variables.PROD_LISTENER_RULE>
+                          stageListener: <+stepGroup.variables.STAGE_LISTENER>
+                          stageListenerRuleArn: <+stepGroup.variables.STAGE_LISTENER_RULE>
+                          updateGreenService: false
+                        when:
+                          stageStatus: Success
+                    - step:
+                        type: ShellScript
+                        name: Trigger Acceptance Tests on Warm Stack
+                        identifier: Trigger_Acceptance_Tests
+                        spec:
+                          shell: Bash
+                          executionTarget: {}
+                          source:
+                            type: Inline
+                            spec:
+                              script: "curl -X POST -H 'content-type: application/json' --url 'https://harness.tools.k8s.uscis.dhs.gov/gateway/pipeline/api/webhook/custom/63PV_Ug1S7qEKdRtqGII7w/v3?accountIdentifier=uX0BXTuLSSqHmD-4iWy9Rw&orgIdentifier=VIS&projectIdentifier=VDIS&pipelineIdentifier=vdissavesmoketest&triggerIdentifier=pipelinetrigger' -d '{\"branch\": \"<+pipeline.branch>\",\"ENVIRONMENT_NAME\": \"<+serviceVariables.TARGET_DEPLOY_ENV>\", \"TEST_WARM_STACK\": \"true\", \"jmeterJmxFilePath\": \"savems-acceptance-test.jmx\"}'"
+                          environmentVariables: []
+                          outputVariables: []
+                        timeout: 20m
+                        when:
+                          stageStatus: Success
+                    - step:
+                        type: HarnessApproval
+                        name: Manual Deployment Approval
+                        identifier: Manual_Deployment_Approval
+                        spec:
+                          approvalMessage: Please review the following information and approve the pipeline progression
+                          includePipelineExecutionHistory: true
+                          isAutoRejectEnabled: true
+                          approvers:
+                            userGroups:
+                              - _project_all_users
+                            minimumCount: 1
+                            disallowPipelineExecutor: false
+                          approverInputs: []
+                        timeout: 10m
+                        when:
+                          stageStatus: Success
+                    - step:
+                        name: ECS Blue Green Swap Target Groups
+                        identifier: EcsBlueGreenSwapTargetGroups
+                        type: EcsBlueGreenSwapTargetGroups
+                        timeout: 10m
+                        spec:
+                          doNotDownsizeOldService: false
+                        when:
+                          stageStatus: Success
+            rollbackSteps:
+              - step:
+                  name: ECS Blue Green Rollback
+                  identifier: EcsBlueGreenRollback
+                  type: EcsBlueGreenRollback
+                  timeout: 10m
+                  spec: {}
+              - step:
+                  type: EcsRollingRollback
+                  name: Ecs Rolling Rollback
+                  identifier: Ecs_Rolling_Rollback
+                  spec: {}
+                  timeout: 10m
+        tags: {}
+        when:
+          pipelineStatus: Success
+          condition: <+pipeline.variables.DEPLOY_SAVEMS> == "true"
+        failureStrategies:
+          - onFailure:
+              errors:
+                - AllErrors
+              action:
+                type: StageRollback
+    - stage:
+        name: ECS Kafka Deploy
+        identifier: ECS_Kafka_Deploy
+        description: ""
+        type: Deployment
+        spec:
+          deploymentType: ECS
+          service:
+            serviceRef: vdissavemicroserviceextendedflow
+            serviceInputs:
+              serviceDefinition:
+                type: ECS
+                spec:
+                  variables:
+                    - name: IMAGE_TAG
+                      type: String
+                      value: <+input>
+                    - name: APP_LOG_LEVEL
+                      type: String
+                      value: <+input>.default(DEBUG).allowedValues(TRACE,DEBUG,INFO,WARN,ERROR)
+                    - name: TASK_ROLE_ARN
+                      type: String
+                      default: arn:aws:iam::790298132094:role/devtest-savems20241030114025133200000006
+                      value: <+input>.default(arn:aws:iam::790298132094:role/devtest-savems20241030114025133200000006).allowedValues(arn:aws:iam::790298132094:role/devtest-savems20241030114025133200000006,arn:aws:iam::790298132094:role/systest-savems20240909223735147100000004,arn:aws:iam::992588962742:role/externaltest-savems20240611221346498100000004,arn:aws:iam::992588962742:role/preview-savems20241015123531741800000004,arn:aws:iam::992588962742:role/prod-savems20240402175636933800000004)
+                    - name: CPU
+                      type: String
+                      value: <+input>.allowedValues(256,1024)
+                    - name: MEMORY
+                      type: String
+                      value: <+input>.allowedValues(1536,3000,5000)
+                    - name: TARGET_DEPLOY_ENV
+                      type: String
+                      value: <+input>.allowedValues(devtest,systest,externaltest,preview,prod)
+                    - name: TARGET_AWS_ACCOUNT
+                      type: String
+                      value: <+input>.allowedValues(NonProd,Prod)
+                    - name: TIMESTAMP
+                      type: String
+                      value: <+pipeline.stages.Deployment_Prep.spec.execution.steps.Determine_Deployment_Info.output.outputVariables.TIMESTAMP>
+                    - name: NEW_RELIC_APP_NAME
+                      type: String
+                      value: <+input>.allowedValues(devtest-savems-extended-flow (nonprod),systest-savems-extended-flow (nonprod),externaltest-savems-extended-flow (prod),preview-savems-extended-flow (prod),prod-savems-extended-flow (prod))
+                    - name: SERVICE_NAME
+                      type: String
+                      value: <+input>
+                    - name: DESIRED_COUNT
+                      type: String
+                      value: <+input>
+                    - name: MAXIMUM_PERCENT
+                      type: String
+                      value: <+input>
+                    - name: SPRING_DYNAMODB_ENDPOINT
+                      type: String
+                      value: <+input>
+                    - name: SPRING_KAFKA_BOOTSTRAP_SERVERS
+                      type: String
+                      value: <+input>
+                    - name: SPRING_KAFKA_PRODUCER_BOOTSTRAP_SERVERS
+                      type: String
+                      value: <+input>
+                    - name: ADDITIONAL_PROFILE_TOGGLES
+                      type: String
+                      value: <+input>
+                    - name: AVAILABILITY_ZONE_REBALANCING
+                      type: String
+                      default: DISABLED
+                      value: <+input>.default(DISABLED).allowedValues(DISABLED,ENABLED,null)
+          environment:
+            useFromStage:
+              stage: ECS_Deploy
+          execution:
+            steps:
+              - step:
+                  type: EcsRollingDeploy
+                  name: ECS Rolling Deploy
+                  identifier: ECS_Rolling_Deploy
+                  spec:
+                    sameAsAlreadyRunningInstances: false
+                    forceNewDeployment: false
+                  timeout: 30m
+            rollbackSteps:
+              - step:
+                  type: EcsRollingRollback
+                  name: ECS Rolling Rollback
+                  identifier: ECS_Rolling_Rollback
+                  spec: {}
+                  timeout: 10m
+        tags: {}
+        when:
+          pipelineStatus: Success
+          condition: <+pipeline.variables.DEPLOY_EXTENDED_FLOW> == "true"
+        failureStrategies:
+          - onFailure:
+              errors:
+                - AllErrors
+              action:
+                type: StageRollback
+    - stage:
+        name: Deployment Marker
+        identifier: Deployment_Marker
+        description: ""
+        type: CI
+        spec:
+          cloneCodebase: true
+          caching:
+            enabled: false
+            override: true
+            paths: []
+          infrastructure:
+            useFromStage: Deployment_Prep
+          execution:
+            steps:
+              - step:
+                  name: New Relic Deployment Marker
+                  identifier: New_Relic_Deployment_Marker
+                  template:
+                    templateRef: org.New_Relic_Deploy_Marker
+                    versionLabel: v1.0.0
+                    templateInputs:
+                      type: Run
+                      spec:
+                        envVariables:
+                          ENTITY_GUID: <+input>
+                          APP_ENV: <+input>.selectOneFrom(cert,certification,demo,dev,devtest,external test,externaltest,ICAMTest,nonprod,perf,performance,pre-prod,preprod,preview,prod,savecertification,stage,staging,systest,test,unstable)
+                          DEPLOYMENT_TYPE: BLUE_GREEN
+                          CHANGE_LOG: Deploy to <+pipeline.stages.ECS_Deploy.spec.serviceVariables.TARGET_DEPLOY_ENV>
+                          IMAGE_TAG: <+pipeline.stages.ECS_Deploy.spec.serviceVariables.IMAGE_TAG>
+          buildIntelligence:
+            enabled: false
+        when:
+          pipelineStatus: Success
+          condition: <+pipeline.variables.DEPLOY_SAVEMS> == "true" || <+pipeline.variables.DEPLOY_EXTENDED_FLOW> == "true"
+    - stage:
+        name: Keystore Monitor
+        identifier: Keystore_Monitor
+        description: ""
+        type: CI
+        spec:
+          cloneCodebase: true
+          caching:
+            enabled: false
+            override: true
+            paths: []
+          infrastructure:
+            useFromStage: Deployment_Prep
+          execution:
+            steps:
+              - stepGroup:
+                  name: Keystore Checker
+                  identifier: Keystore_Checker
+                  steps:
+                    - step:
+                        name: AWS Role Assumption
+                        identifier: AWS_Role_Assumption
+                        template:
+                          templateRef: account.AWS_Role_Assumption
+                          versionLabel: "2.0"
+                          gitBranch: main
+                          templateInputs:
+                            type: Run
+                            spec:
+                              envVariables:
+                                ROLE_TO_ASSUME: <+pipeline.variables.AWS_ASSUME_ROLE>
+                    - step:
+                        type: Run
+                        name: Monitor Keystore Shell Script
+                        identifier: Monitor_Keystore_Shell_Script
+                        spec:
+                          connectorRef: org.viscoreinfraservicesnexus
+                          image: <+variable.org.Harness_Docker_Base_Latest>
+                          shell: Bash
+                          command: source keystore/check_keystore.sh
+                          privileged: false
+                          envVariables:
+                            ROLE_TO_ASSUME: <+pipeline.variables.AWS_ASSUME_ROLE>
+                            env: <+pipeline.variables.DEPLOY_ENV>
+                            nonprodelisvault: <+secrets.getValue("hashicorpvault://vdis_nonprod_vault_connector/environments/nonprod/savems/config#ELIS_KEYSTORE_PASSWORD")>
+                            nonprodkeystorevault: <+secrets.getValue("hashicorpvault://vdis_nonprod_vault_connector/environments/nonprod/savems/config#KEYSTORE_PASSWORD")>
+                            prodelisvault: <+secrets.getValue("hashicorpvault://vdis_prod_vault_connector/environments/prod/savems/config#ELIS_KEYSTORE_PASSWORD")>
+                            prodkeystorevault: <+secrets.getValue("hashicorpvault://vdis_prod_vault_connector/environments/prod/savems/config#KEYSTORE_PASSWORD")>
+                            prodkafkavault: <+secrets.getValue("hashicorpvault://vdis_prod_vault_connector/environments/prod/savems/config#KAFKA_KEYSTORE_PASSWORD")>
+                            prodpreviewvault: <+secrets.getValue("hashicorpvault://vdis_prod_vault_connector/environments/preview/savems/config#KAFKA_KEYSTORE_PASSWORD")>
+                            AWS_ENV: <+<+pipeline.variables.DEPLOY_ENV>=~["externaltest", "preview", "prod"]?"prod":"nonprod">
+                            DEPLOY_WEBHOOK_URL: <+pipeline.stages.Keystore_Monitor.variables.DEPLOY_WEBHOOK_URL>
+                            buildName: <+pipeline.name>
+                            buildRepo: <+pipeline.repo>
+                            buildBranch: <+pipeline.branch>
+                            deployEnv: <+pipeline.variables.DEPLOY_ENV>
+                            buildStatus: <+pipeline.status>
+                            author: <+pipeline.triggeredBy.name>
+                            buildNum: <+pipeline.sequenceId>
+                            deploymentNotes: <+pipeline.stages.Deployment_Prep.spec.execution.steps.Determine_Deployment_Info.output.outputVariables.DEPLOYMENT_NOTES>
+                          outputVariables:
+                            - name: knotify_30days
+                              type: String
+                              value: kn30d
+                            - name: eknotify_30days
+                              type: String
+                              value: ekn30d
+                            - name: kknotify_30days
+                              type: String
+                              value: kkn30d
+                            - name: pkknotify_30days
+                              type: String
+                              value: pkkn30d
+                            - name: env_loc
+                              type: String
+                              value: loc
+                      contextType: Pipeline
+              - step:
+                  type: Run
+                  name: Notify
+                  identifier: Notify
+                  spec:
+                    connectorRef: org.viscoreinfraservicesnexus
+                    image: <+variable.org.Harness_Docker_Base_Latest>
+                    shell: Sh
+                    command: |-
+                      if [ "<+execution.steps.Keystore_Checker.steps.Monitor_Keystore_Shell_Script.output.outputVariables.env_loc>" = "nonprod" ]; then
+                        if [ "<+execution.steps.Keystore_Checker.steps.Monitor_Keystore_Shell_Script.output.outputVariables.knotify_30days>" = "0" ] || [ "<+execution.steps.Keystore_Checker.steps.Monitor_Keystore_Shell_Script.output.outputVariables.eknotify_30days>" = "0" ]; then
+                            echo "No certificates are expiring in the next 30 days"
+                        else
+                          exit 1
+                        fi
+                      fi
+
+                      if [ "<+execution.steps.Keystore_Checker.steps.Monitor_Keystore_Shell_Script.output.outputVariables.env_loc>" = "prod" ]; then
+                        if [ "<+execution.steps.Keystore_Checker.steps.Monitor_Keystore_Shell_Script.output.outputVariables.knotify_30days>" = "0" ] || [ "<+execution.steps.Keystore_Checker.steps.Monitor_Keystore_Shell_Script.output.outputVariables.eknotify_30days>" = "0" ] || [ "<+execution.steps.Keystore_Checker.steps.Monitor_Keystore_Shell_Script.output.outputVariables.kknotify_30days>" = "0" ] || [ "<+execution.steps.Keystore_Checker.steps.Monitor_Keystore_Shell_Script.output.outputVariables.pkknotify_30days>" = "0" ]; then
+                            echo "No certificates are expiring in the next 30 days"
+                        else
+                          exit 1
+                        fi
+                      fi
+                    outputVariables:
+                      - name: buildName
+                        type: String
+                        value: <+pipeline.name>
+                      - name: buildRepo
+                        type: String
+                        value: <+pipeline.repo>
+                      - name: buildBranch
+                        type: String
+                        value: <+pipeline.branch>
+                      - name: deployEnv
+                        type: String
+                        value: <+pipeline.variables.DEPLOY_ENV>
+                      - name: buildStatus
+                        type: String
+                        value: <+pipeline.status>
+                      - name: author
+                        type: String
+                        value: <+pipeline.triggeredBy.name>
+                      - name: buildNum
+                        type: String
+                        value: <+pipeline.sequenceId>
+                      - name: deploymentNotes
+                        type: String
+                        value: <+pipeline.stages.Deployment_Prep.spec.execution.steps.Determine_Deployment_Info.output.outputVariables.DEPLOYMENT_NOTES>
+                  failureStrategies:
+                    - onFailure:
+                        errors:
+                          - AllErrors
+                        action:
+                          type: ManualIntervention
+                          spec:
+                            timeout: 2h
+                            onTimeout:
+                              action:
+                                type: MarkAsFailure
+          buildIntelligence:
+            enabled: false
+        when:
+          pipelineStatus: Success
+          condition: ""
+        variables:
+          - name: DEPLOY_WEBHOOK_URL
+            type: String
+            description: Teams Webhook URL to send automatic keystore notifications to
+            value: <+input>
+  properties:
+    ci:
+      codebase:
+        connectorRef: org.VIS_GIT_Organization_Connector
+        repoName: pcim-save-micro-service
+        build: <+input>
+        sparseCheckout: []
+  variables:
+    - name: RUN_CI
+      type: String
+      description: For future use only - leave as "false" for now 08-25-25. Will update at a later date.
+      required: true
+      value: <+input>.allowedValues(true,false)
+    - name: DEPLOY_ENV
+      type: String
+      value: <+input>.allowedValues(devtest,systest,externaltest,preview,prod)
+    - name: DEPLOY_WEBHOOK_URL
+      type: String
+      description: Teams Webhook URL to send automatic deployment notifications to
+      value: <+input>
+    - name: DEPLOY_SAVEMS
+      description: Select TRUE to deploy standard savems.
+      type: String
+      required: true
+      value: <+input>.allowedValues(true,false)
+    - name: DEPLOY_EXTENDED_FLOW
+      description: Select TRUE to deploy extended flow.
+      type: String
+      required: true
+      value: <+input>.allowedValues(true,false)
+    - name: AWS_ENV
+      type: String
+      description: ""
+      required: true
+      value: <+<+pipeline.variables.DEPLOY_ENV>=~["externaltest", "preview", "prod"]?"prod":"nonprod">
+    - name: AWS_ASSUME_ROLE
+      type: String
+      description: ""
+      required: true
+      value: <+<+pipeline.variables.AWS_ENV>=="prod"?"arn:aws:iam::992588962742:role/JenkinsInstanceRole":"arn:aws:iam::790298132094:role/JenkinsInstanceRole">
+  notificationRules:
+    - name: Keystore Certificate Notification
+      identifier: Keystore_Certificate_Notification
+      pipelineEvents:
+        - type: StepFailed
+          forSteps:
+            - Keystore_Monitor.Notify
+      notificationMethod:
+        type: Webhook
+        spec:
+          webhookUrl: <+pipeline.stages.Keystore_Monitor.variables.DEPLOY_WEBHOOK_URL>
+      enabled: true
+      template:
+        versionLabel: v0.0.1
+        templateRef: Keystore_Teams_Notification
+        orgIdentifier: VIS
+        projectIdentifier: VDIS
+    - name: Keystore Certificate  Notification Email
+      identifier: Keystore_Certificate_Notification_Email
+      pipelineEvents:
+        - type: StepFailed
+          forSteps:
+            - Keystore_Monitor.Notify
+      notificationMethod:
+        type: Email
+        spec:
+          userGroups: []
+          recipients:
+            - VISOpsManager@uscis.dhs.gov
+            - OIT-VER-FALCON-VDIS-Cerberus@uscis.dhs.gov
+      enabled: true
+      template:
+        versionLabel: v1
+        templateRef: Keystore_Notification
+        orgIdentifier: VIS
+        projectIdentifier: VDIS
+    - name: vdis-save-micro-service-deployment-notification
+      identifier: vdissavemicroservicedeploymentnotification
+      pipelineEvents:
+        - type: PipelineFailed
+        - type: PipelineSuccess
+      notificationMethod:
+        type: Webhook
+        spec:
+          webhookUrl: <+pipeline.variables.DEPLOY_WEBHOOK_URL>
+      enabled: true
+      template:
+        versionLabel: v0.0.2
+        templateRef: VDIS_Deployment_Notification
+        orgIdentifier: VIS
+        projectIdentifier: VDIS

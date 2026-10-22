@@ -1,0 +1,321 @@
+pipeline:
+  name: apigee-proxy-save-vis
+  identifier: apigeeproxysavevis
+  projectIdentifier: VDIS
+  orgIdentifier: VIS
+  tags: {}
+  properties:
+    ci:
+      codebase:
+        connectorRef: org.VIS_GIT_Organization_Connector
+        repoName: pcim-save-micro-service
+        build: <+input>
+  variables:
+    - name: branchName
+      type: String
+      required: false
+      value: <+input>.default(<+pipeline.branch>)
+    - name: PROXY_DIR
+      type: String
+      required: false
+      value: pipeline/apigee
+    - name: ENV_SWITCH
+      type: String
+      required: false
+      value: <+input>.allowedValues(dev,int,prod)
+    - name: vault_env
+      type: String
+      required: false
+      value: <+ <+pipeline.variables.ENV_SWITCH> == "dev"?"nonprod":"prod">
+    - name: deploy_production
+      type: String
+      default: "false"
+      value: <+input>.allowedValues(true, false)
+    - name: deployProxy
+      type: String
+      required: false
+      value: |-
+        cd pipeline/apigee
+        echo "Deploying to Apigee ${APIGEE_ENV} environment"
+        echo "Using ${vault_env} vault connector"
+
+        # Set environment variable
+        env="${DEPLOY_ENV}"
+        echo "Deploy Proxy Env: ${env}"
+
+        proxy_prefix="${PROXY_NAME}"
+        echo "Deploy Proxy Env: ${env}"
+
+        # Define variables dynamically
+        basePath="vdis/save/${env}"
+        proxyName="${proxy_prefix}-${env}"
+        msName=save-ms
+        serverName="${msName}-${env}"
+
+        # Echo variables to save
+        echo "basePath: ${basePath}"
+        echo "proxyName: ${proxyName}"
+        echo "msName: ${msName}"
+        echo "serverName: ${serverName}"
+
+        # Update configuration files dynamically
+        sed -i "s#save-ms-apigee-proxy-name#${proxyName}#" pom.xml
+        sed -i "s#saveoauth2#${basePath}#" apiproxy/proxies/default.xml
+        sed -i "s#save-ms#${serverName}#" apiproxy/targets/default.xml
+
+        # Deploy using Maven
+        mvn install -X -P${APIGEE_ENV} -Dusername=<+secrets.getValue("hashicorpvault://vdis_" + <+pipeline.variables.vault_env> + "_vault_connector/platforms/apigee/apigee-" + <+pipeline.variables.vault_env> + "-vis-dev#user")> -Dpassword=<+secrets.getValue("hashicorpvault://vdis_" + <+pipeline.variables.vault_env> + "_vault_connector/platforms/apigee/apigee-" + <+pipeline.variables.vault_env> + "-vis-dev#pass")> \-Dauthtype=oauth -Doptions=validate,inactive
+
+        # Revert changes to configuration files
+        sed -i "s#${proxyName}#save-ms-apigee-proxy-name#" pom.xml
+        sed -i "s#${basePath}#saveoauth2#" apiproxy/proxies/default.xml
+        sed -i "s#${serverName}#save-ms#" apiproxy/targets/default.xml
+    - name: DEPLOY_ENV
+      type: String
+      value: <+pipeline.variables.ENV_SWITCH>
+    - name: DEPLOY_WEBHOOK_URL
+      type: String
+      description: Teams Webhook URL to send automatic deployment notifications to
+      value: <+<+pipeline.variables.vault_env>=="prod"?"https://default5e41ee740d2d4a728975998ce83205e.b.environment.api.gov.powerplatform.microsoft.us:443/powerautomate/automations/direct/workflows/a301ee27be1249c89764b012c8d2c1c6/triggers/manual/paths/invoke?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=BmswcmbBrnTdIQrIBIOkTAJtyIYvTqHuh5vqSQ7tjRA":"https://default5e41ee740d2d4a728975998ce83205e.b.environment.api.gov.powerplatform.microsoft.us:443/powerautomate/automations/direct/workflows/f64422213ae24f8fa6ba008e872f1a85/triggers/manual/paths/invoke?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=57jvEp8pG2_XHV7t4ucP0rToJWlKZAiSbHBMkpNPyTs">
+  stages:
+    - stage:
+        name: Setup Deploy Proxy Buddle
+        identifier: Setup_Deploy
+        description: ""
+        type: CI
+        spec:
+          cloneCodebase: true
+          caching:
+            enabled: false
+            override: true
+          infrastructure:
+            type: KubernetesDirect
+            spec:
+              connectorRef: org.orgprodkubernetesvis
+              namespace: harness-delegate-ng
+              serviceAccountName: harness-vis-delegate
+              automountServiceAccountToken: true
+              tolerations:
+                - effect: NoSchedule
+                  key: Group-Name
+                  operator: Equal
+                  value: karp-critical-cicd
+              nodeSelector:
+                eid-platform/node-lifecycle: karp-critical-cicd
+              containerSecurityContext:
+                privileged: false
+                allowPrivilegeEscalation: true
+              harnessImageConnectorRef: account.acct_ecr_eid_connector_prod
+              os: Linux
+          sharedPaths:
+            - /var/run
+            - /run
+            - /shared/customer_artifacts/certificates
+          execution:
+            steps:
+              - step:
+                  type: Run
+                  name: Bundle Lint
+                  identifier: Bundle_Lint
+                  spec:
+                    connectorRef: apigee_repo_connector
+                    image: apigee-deployer:latest
+                    shell: Bash
+                    command: |-
+                      echo "Working dir: "
+                      pwd
+                      ls -ltr
+
+                      echo 'Linting Apigee proxy bundle'
+                      apigeelint -s pipeline/apigee/apiproxy -e BN001 -w "$(pwd)/" -f json.js
+    - stage:
+        name: Deploy Lower Proxy Bundle
+        identifier: Deploy_Lower
+        description: ""
+        type: CI
+        spec:
+          cloneCodebase: true
+          caching:
+            enabled: false
+            override: true
+          infrastructure:
+            type: KubernetesDirect
+            spec:
+              connectorRef: org.orgprodkubernetesvis
+              namespace: harness-delegate-ng
+              serviceAccountName: harness-vis-delegate
+              automountServiceAccountToken: true
+              tolerations:
+                - effect: NoSchedule
+                  key: Group-Name
+                  operator: Equal
+                  value: karp-critical-cicd
+              nodeSelector:
+                eid-platform/node-lifecycle: karp-critical-cicd
+              containerSecurityContext:
+                privileged: false
+                allowPrivilegeEscalation: true
+              harnessImageConnectorRef: account.acct_ecr_eid_connector_prod
+              os: Linux
+          sharedPaths:
+            - /var/run
+            - /run
+            - /shared/customer_artifacts/certificates
+          execution:
+            steps:
+              - stepGroup:
+                  name: Apigee DevTest Deploy and Test
+                  identifier: Apigee_DevTest_Deploy_and_Test
+                  steps:
+                    - step:
+                        type: Run
+                        name: Deploy
+                        identifier: Deploy
+                        spec:
+                          connectorRef: apigee_repo_connector
+                          image: apigee-deployer:latest
+                          shell: Bash
+                          command: <+pipeline.variables.deployProxy>
+                          envVariables:
+                            APIGEE_ENV: dev
+                            PROXY_NAME: vdis-savems
+                            DEPLOY_ENV: devtest
+                            vault_env: nonprod
+                  when:
+                    stageStatus: All
+                    condition: <+pipeline.variables.ENV_SWITCH> == "dev"
+              - stepGroup:
+                  name: Apigee SysTest Deploy and Test
+                  identifier: Apigee_SysTest_Deploy_and_Test
+                  steps:
+                    - step:
+                        type: Run
+                        name: Deploy
+                        identifier: Deploy
+                        spec:
+                          connectorRef: apigee_repo_connector
+                          image: apigee-deployer:latest
+                          shell: Bash
+                          command: <+pipeline.variables.deployProxy>
+                          envVariables:
+                            APIGEE_ENV: dev
+                            PROXY_NAME: vdis-savems
+                            DEPLOY_ENV: systest
+                            vault_env: nonprod
+                  when:
+                    stageStatus: All
+                    condition: <+pipeline.variables.ENV_SWITCH> == "dev"
+    - stage:
+        name: Deploy Upper Proxy Bundle
+        identifier: Deploy_Upper
+        description: ""
+        type: CI
+        spec:
+          cloneCodebase: true
+          caching:
+            enabled: false
+            override: true
+          infrastructure:
+            type: KubernetesDirect
+            spec:
+              connectorRef: org.orgprodkubernetesvis
+              namespace: harness-delegate-ng
+              serviceAccountName: harness-vis-delegate
+              automountServiceAccountToken: true
+              tolerations:
+                - effect: NoSchedule
+                  key: Group-Name
+                  operator: Equal
+                  value: karp-critical-cicd
+              nodeSelector:
+                eid-platform/node-lifecycle: karp-critical-cicd
+              containerSecurityContext:
+                privileged: false
+                allowPrivilegeEscalation: true
+              harnessImageConnectorRef: account.acct_ecr_eid_connector_prod
+              os: Linux
+          sharedPaths:
+            - /var/run
+            - /run
+            - /shared/customer_artifacts/certificates
+          execution:
+            steps:
+              - stepGroup:
+                  name: Apigee ExternalTest Deploy and Test
+                  identifier: Apigee_ExternalTest_Deploy_and_Test
+                  steps:
+                    - step:
+                        type: Run
+                        name: Deploy
+                        identifier: Deploy
+                        spec:
+                          connectorRef: apigee_repo_connector
+                          image: apigee-deployer:latest
+                          shell: Bash
+                          command: <+pipeline.variables.deployProxy>
+                          envVariables:
+                            APIGEE_ENV: int
+                            PROXY_NAME: vdis-savems
+                            DEPLOY_ENV: externaltest
+                            vault_env: prod
+                  when:
+                    stageStatus: All
+                    condition: <+pipeline.variables.ENV_SWITCH> == "int"
+              - stepGroup:
+                  name: Apigee Preview Deploy and Test
+                  identifier: Apigee_Preview_Deploy_and_Test
+                  steps:
+                    - step:
+                        type: Run
+                        name: Deploy
+                        identifier: Deploy
+                        spec:
+                          connectorRef: apigee_repo_connector
+                          image: apigee-deployer:latest
+                          shell: Bash
+                          command: <+pipeline.variables.deployProxy>
+                          envVariables:
+                            APIGEE_ENV: int
+                            PROXY_NAME: vdis-savems
+                            DEPLOY_ENV: preview
+                            vault_env: prod
+                  when:
+                    stageStatus: All
+                    condition: <+pipeline.variables.ENV_SWITCH> == "int"
+              - stepGroup:
+                  name: Apigee Production Deploy and Test
+                  identifier: Apigee_Production_Deploy_and_Test
+                  steps:
+                    - step:
+                        type: Run
+                        name: Deploy
+                        identifier: Deploy
+                        spec:
+                          connectorRef: apigee_repo_connector
+                          image: apigee-deployer:latest
+                          shell: Bash
+                          command: <+pipeline.variables.deployProxy>
+                          envVariables:
+                            APIGEE_ENV: prod
+                            PROXY_NAME: vdis-savems
+                            DEPLOY_ENV: prod
+                            vault_env: prod
+                  when:
+                    stageStatus: All
+                    condition: <+pipeline.variables.ENV_SWITCH> == "prod"
+  notificationRules:
+    - name: apigee-proxy-save-vis-notification
+      identifier: apigeeproxysavevisnotification
+      pipelineEvents:
+        - type: PipelineFailed
+        - type: PipelineSuccess
+      notificationMethod:
+        type: Webhook
+        spec:
+          webhookUrl: <+pipeline.variables.DEPLOY_WEBHOOK_URL>
+      template:
+        versionLabel: v0.0.1
+        templateRef: VDIS_Deployment_Notification
+        orgIdentifier: VIS
+        projectIdentifier: VDIS
+      enabled: true

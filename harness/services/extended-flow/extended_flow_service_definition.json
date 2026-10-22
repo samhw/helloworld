@@ -1,0 +1,10 @@
+{
+  "cluster": "vis-internal-docker-ecs-cluster",
+  "serviceName": "<+serviceVariables.SERVICE_NAME>",
+  "desiredCount": "<+serviceVariables.DESIRED_COUNT>",
+  "deploymentConfiguration": {
+    "maximumPercent": "<+serviceVariables.MAXIMUM_PERCENT>",
+    "minimumHealthyPercent": 100
+  },
+  "availabilityZoneRebalancing": "<+serviceVariables.AVAILABILITY_ZONE_REBALANCING>"
+}

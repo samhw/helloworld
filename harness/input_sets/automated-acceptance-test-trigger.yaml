@@ -1,0 +1,17 @@
+inputSet:
+  name: automated-acceptance-test-trigger
+  tags: {}
+  identifier: automatedacceptancetesttrigger
+  orgIdentifier: VIS
+  projectIdentifier: VDIS
+  pipeline:
+    identifier: vdissaveacceptancetest
+    variables:
+      - name: ENVIRONMENT_NAME
+        type: String
+        value: <+eventPayload.ENVIRONMENT_NAME>
+        default: devtest
+      - name: TEST_WARM_STACK
+        type: String
+        value: <+eventPayload.TEST_WARM_STACK>
+        default: "false"

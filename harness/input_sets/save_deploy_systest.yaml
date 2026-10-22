@@ -1,0 +1,182 @@
+inputSet:
+  name: save_deploy_systest
+  tags: {}
+  identifier: save_deploy_systest
+  orgIdentifier: VIS
+  projectIdentifier: VDIS
+  pipeline:
+    identifier: vdissavemicroservicedeployment
+    stages:
+      - stage:
+          identifier: ECS_Deploy
+          type: Deployment
+          spec:
+            service:
+              serviceInputs:
+                serviceDefinition:
+                  type: ECS
+                  spec:
+                    variables:
+                      - name: IMAGE_TAG
+                        type: String
+                        value: ""
+                      - name: APP_LOG_LEVEL
+                        type: String
+                        value: DEBUG
+                      - name: TASK_ROLE_ARN
+                        type: String
+                        default: arn:aws:iam::790298132094:role/systest-savems20240909223735147100000004
+                        value: arn:aws:iam::790298132094:role/systest-savems20240909223735147100000004
+                      - name: CPU
+                        type: String
+                        value: "256"
+                      - name: MEMORY
+                        type: String
+                        value: "1536"
+                      - name: TARGET_DEPLOY_ENV
+                        type: String
+                        value: systest
+                      - name: TARGET_AWS_ACCOUNT
+                        type: String
+                        value: NonProd
+                      - name: NEW_RELIC_APP_NAME
+                        type: String
+                        value: systest-savems (nonprod)
+                      - name: SERVICE_NAME
+                        type: String
+                        value: systest-savems
+                      - name: DESIRED_COUNT
+                        type: String
+                        value: "4"
+            environment:
+              environmentRef: NonProd
+              infrastructureDefinitions:
+                - identifier: nonprod
+            execution:
+              steps:
+                - stepGroup:
+                    identifier: blueGreenDepoyment
+                    variables:
+                      - name: PROD_LISTENER
+                        type: String
+                        value: arn:aws:elasticloadbalancing:us-east-1:790298132094:listener/app/vis-vdis-int-nonprod-alb/4d3b50d4cd99344c/235402308fadbdd2
+                      - name: PROD_LISTENER_RULE
+                        type: String
+                        value: arn:aws:elasticloadbalancing:us-east-1:790298132094:listener-rule/app/vis-vdis-int-nonprod-alb/4d3b50d4cd99344c/235402308fadbdd2/2a133c1a3b7ca58a
+                      - name: STAGE_LISTENER
+                        type: String
+                        value: arn:aws:elasticloadbalancing:us-east-1:790298132094:listener/app/vis-vdis-int-nonprod-alb/4d3b50d4cd99344c/6175e8040735b242
+                      - name: STAGE_LISTENER_RULE
+                        type: String
+                        value: arn:aws:elasticloadbalancing:us-east-1:790298132094:listener-rule/app/vis-vdis-int-nonprod-alb/4d3b50d4cd99344c/6175e8040735b242/db87e79d2b10850b
+                    steps:
+                      - step:
+                          identifier: EcsBlueGreenCreateService
+                          type: EcsBlueGreenCreateService
+                          spec:
+                            loadBalancer: vis-vdis-int-nonprod-alb
+      - stage:
+          identifier: ECS_Kafka_Deploy
+          type: Deployment
+          spec:
+            service:
+              serviceInputs:
+                serviceDefinition:
+                  type: ECS
+                  spec:
+                    variables:
+                      - name: IMAGE_TAG
+                        type: String
+                        value: ""
+                      - name: APP_LOG_LEVEL
+                        type: String
+                        value: DEBUG
+                      - name: TASK_ROLE_ARN
+                        type: String
+                        default: arn:aws:iam::790298132094:role/systest-savems20240909223735147100000004
+                        value: arn:aws:iam::790298132094:role/systest-savems20240909223735147100000004
+                      - name: CPU
+                        type: String
+                        value: "256"
+                      - name: MEMORY
+                        type: String
+                        value: "3000"
+                      - name: TARGET_DEPLOY_ENV
+                        type: String
+                        value: systest
+                      - name: TARGET_AWS_ACCOUNT
+                        type: String
+                        value: NonProd
+                      - name: NEW_RELIC_APP_NAME
+                        type: String
+                        value: systest-savems-extended-flow (nonprod)
+                      - name: SERVICE_NAME
+                        type: String
+                        value: systest-savems-extended-flow
+                      - name: DESIRED_COUNT
+                        type: String
+                        value: "3"
+                      - name: MAXIMUM_PERCENT
+                        type: String
+                        value: "200"
+                      - name: SPRING_DYNAMODB_ENDPOINT
+                        type: String
+                        value: https://dynamodb.us-east-1.amazonaws.com
+                      - name: SPRING_KAFKA_BOOTSTRAP_SERVERS
+                        type: String
+                        value: broker1.kafka-sint.uscis.dhs.gov:9093,broker2.kafka-sint.uscis.dhs.gov:9093,broker3.kafka-sint.uscis.dhs.gov:9093
+                      - name: SPRING_KAFKA_PRODUCER_BOOTSTRAP_SERVERS
+                        type: String
+                        value: broker1.kafka-sint.uscis.dhs.gov:9093,broker2.kafka-sint.uscis.dhs.gov:9093,broker3.kafka-sint.uscis.dhs.gov:9093
+                      - name: ADDITIONAL_PROFILE_TOGGLES
+                        type: String
+                        value: kafka-enabled
+                      - name: AVAILABILITY_ZONE_REBALANCING
+                        type: String
+                        default: DISABLED
+                        value: <+input>.default(DISABLED).allowedValues(DISABLED,ENABLED,null)
+      - stage:
+          identifier: Deployment_Marker
+          type: CI
+          spec:
+            execution:
+              steps:
+                - step:
+                    identifier: New_Relic_Deployment_Marker
+                    template:
+                      templateInputs:
+                        type: Run
+                        spec:
+                          envVariables:
+                            ENTITY_GUID: MTEyMTM1N3xBUE18QVBQTElDQVRJT058NTQ1NzAzNTYw
+                            APP_ENV: systest
+      - stage:
+          identifier: Keystore_Monitor
+          type: CI
+          variables:
+            - name: DEPLOY_WEBHOOK_URL
+              type: String
+              value: https://default5e41ee740d2d4a728975998ce83205e.b.environment.api.gov.powerplatform.microsoft.us:443/powerautomate/automations/direct/workflows/e643cfcaa2884468a2308fb54c85a199/triggers/manual/paths/invoke?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=yLglZ62506q1njrRd-U6snxmNhT1HBDFW9AqtiVNJsA
+    properties:
+      ci:
+        codebase:
+          build:
+            type: branch
+            spec:
+              branch: <+pipeline.branch>
+    variables:
+      - name: RUN_CI
+        type: String
+        value: "false"
+      - name: DEPLOY_ENV
+        type: String
+        value: systest
+      - name: DEPLOY_WEBHOOK_URL
+        type: String
+        value: https://default5e41ee740d2d4a728975998ce83205e.b.environment.api.gov.powerplatform.microsoft.us:443/powerautomate/automations/direct/workflows/f64422213ae24f8fa6ba008e872f1a85/triggers/manual/paths/invoke?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=57jvEp8pG2_XHV7t4ucP0rToJWlKZAiSbHBMkpNPyTs
+      - name: DEPLOY_SAVEMS
+        type: String
+        value: "false"
+      - name: DEPLOY_EXTENDED_FLOW
+        type: String
+        value: "false"

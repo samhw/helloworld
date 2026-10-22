@@ -1,0 +1,206 @@
+inputSet:
+  name: save_deploy_devtest
+  tags: {}
+  identifier: save_deploy_devtest
+  orgIdentifier: VIS
+  projectIdentifier: VDIS
+  pipeline:
+    identifier: vdissavemicroservicedeployment
+    stages:
+      - stage:
+          identifier: ECS_Deploy
+          type: Deployment
+          spec:
+            service:
+              serviceInputs:
+                serviceDefinition:
+                  type: ECS
+                  spec:
+                    variables:
+                      - name: IMAGE_TAG
+                        type: String
+                        value: ""
+                      - name: APP_LOG_LEVEL
+                        type: String
+                        value: DEBUG
+                      - name: TASK_ROLE_ARN
+                        type: String
+                        default: arn:aws:iam::790298132094:role/devtest-savems20241030114025133200000006
+                        value: arn:aws:iam::790298132094:role/devtest-savems20241030114025133200000006
+                      - name: CPU
+                        type: String
+                        value: "256"
+                      - name: MEMORY
+                        type: String
+                        value: "1536"
+                      - name: TARGET_DEPLOY_ENV
+                        type: String
+                        value: devtest
+                      - name: TARGET_AWS_ACCOUNT
+                        type: String
+                        value: NonProd
+                      - name: NEW_RELIC_APP_NAME
+                        type: String
+                        value: devtest-savems (nonprod)
+                      - name: SERVICE_NAME
+                        type: String
+                        value: devtest-savems
+                      - name: DESIRED_COUNT
+                        type: String
+                        value: "4"
+            environment:
+              environmentRef: NonProd
+              infrastructureDefinitions:
+                - identifier: nonprod
+            execution:
+              steps:
+                - stepGroup:
+                    identifier: blueGreenDepoyment
+                    variables:
+                      - name: PROD_LISTENER
+                        type: String
+                        value: arn:aws:elasticloadbalancing:us-east-1:790298132094:listener/app/vis-vdis-int-nonprod-alb/4d3b50d4cd99344c/235402308fadbdd2
+                      - name: PROD_LISTENER_RULE
+                        type: String
+                        value: arn:aws:elasticloadbalancing:us-east-1:790298132094:listener-rule/app/vis-vdis-int-nonprod-alb/4d3b50d4cd99344c/235402308fadbdd2/1cc1ec59d2b93c02
+                      - name: STAGE_LISTENER
+                        type: String
+                        value: arn:aws:elasticloadbalancing:us-east-1:790298132094:listener/app/vis-vdis-int-nonprod-alb/4d3b50d4cd99344c/6175e8040735b242
+                      - name: STAGE_LISTENER_RULE
+                        type: String
+                        value: arn:aws:elasticloadbalancing:us-east-1:790298132094:listener-rule/app/vis-vdis-int-nonprod-alb/4d3b50d4cd99344c/6175e8040735b242/07223da753d2f3fb
+                    steps:
+                      - step:
+                          identifier: EcsBlueGreenCreateService
+                          type: EcsBlueGreenCreateService
+                          spec:
+                            loadBalancer: vis-vdis-int-nonprod-alb
+      - stage:
+          identifier: ECS_Kafka_Deploy
+          type: Deployment
+          spec:
+            service:
+              serviceInputs:
+                serviceDefinition:
+                  type: ECS
+                  spec:
+                    variables:
+                      - name: IMAGE_TAG
+                        type: String
+                        value: ""
+                      - name: APP_LOG_LEVEL
+                        type: String
+                        value: DEBUG
+                      - name: TASK_ROLE_ARN
+                        type: String
+                        default: arn:aws:iam::790298132094:role/devtest-savems20241030114025133200000006
+                        value: arn:aws:iam::790298132094:role/devtest-savems20241030114025133200000006
+                      - name: CPU
+                        type: String
+                        value: "256"
+                      - name: MEMORY
+                        type: String
+                        value: "1536"
+                      - name: TARGET_DEPLOY_ENV
+                        type: String
+                        value: devtest
+                      - name: TARGET_AWS_ACCOUNT
+                        type: String
+                        value: NonProd
+                      - name: NEW_RELIC_APP_NAME
+                        type: String
+                        value: devtest-savems-extended-flow (nonprod)
+                      - name: SERVICE_NAME
+                        type: String
+                        value: devtest-savems-extended-flow
+                      - name: DESIRED_COUNT
+                        type: String
+                        value: "1"
+                      - name: MAXIMUM_PERCENT
+                        type: String
+                        value: "200"
+                      - name: SPRING_DYNAMODB_ENDPOINT
+                        type: String
+                        value: https://dynamodb.us-east-1.amazonaws.com
+                      - name: SPRING_KAFKA_BOOTSTRAP_SERVERS
+                        type: String
+                        value: broker1.kafka-dev.uscis.dhs.gov:9092,broker2.kafka-dev.uscis.dhs.gov:9092,broker3.kafka-dev.uscis.dhs.gov:9092
+                      - name: SPRING_KAFKA_PRODUCER_BOOTSTRAP_SERVERS
+                        type: String
+                        value: broker1.kafka-dev.uscis.dhs.gov:9092,broker2.kafka-dev.uscis.dhs.gov:9092,broker3.kafka-dev.uscis.dhs.gov:9092
+                      - name: ADDITIONAL_PROFILE_TOGGLES
+                        type: String
+                        value: kafka-enabled
+                      - name: AVAILABILITY_ZONE_REBALANCING
+                        type: String
+                        default: DISABLED
+                        value: <+input>.default(DISABLED).allowedValues(DISABLED,ENABLED,null)
+      - stage:
+          identifier: Deployment_Marker
+          type: CI
+          spec:
+            execution:
+              steps:
+                - step:
+                    identifier: New_Relic_Deployment_Marker
+                    template:
+                      templateInputs:
+                        type: Run
+                        spec:
+                          envVariables:
+                            ENTITY_GUID: MTEyMTM1N3xBUE18QVBQTElDQVRJT058NTQ2OTQ1ODA2
+                            APP_ENV: devtest
+      - stage:
+          identifier: Keystore_Monitor
+          type: CI
+          variables:
+            - name: DEPLOY_WEBHOOK_URL
+              type: String
+              value: https://default5e41ee740d2d4a728975998ce83205e.b.environment.api.gov.powerplatform.microsoft.us:443/powerautomate/automations/direct/workflows/e643cfcaa2884468a2308fb54c85a199/triggers/manual/paths/invoke?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=yLglZ62506q1njrRd-U6snxmNhT1HBDFW9AqtiVNJsA
+            - name: buildName
+              type: String
+              value: <+pipeline.name>
+            - name: buildRepo
+              type: String
+              value: <+pipeline.repo>
+            - name: buildBranch
+              type: String
+              value: <+pipeline.branch>
+            - name: deployEnv
+              type: String
+              value: <+pipeline.variables.DEPLOY_ENV>
+            - name: buildStatus
+              type: String
+              value: <+pipeline.status>
+            - name: author
+              type: String
+              value: <+pipeline.triggeredBy.name>
+            - name: buildNum
+              type: String
+              value: <+pipeline.sequenceId>
+            - name: deploymentNotes
+              type: String
+              value: <+pipeline.stages.Deployment_Prep.spec.execution.steps.Determine_Deployment_Info.output.outputVariables.DEPLOYMENT_NOTES>
+    properties:
+      ci:
+        codebase:
+          build:
+            type: branch
+            spec:
+              branch: <+pipeline.branch>
+    variables:
+      - name: RUN_CI
+        type: String
+        value: "false"
+      - name: DEPLOY_ENV
+        type: String
+        value: devtest
+      - name: DEPLOY_WEBHOOK_URL
+        type: String
+        value: https://default5e41ee740d2d4a728975998ce83205e.b.environment.api.gov.powerplatform.microsoft.us:443/powerautomate/automations/direct/workflows/f64422213ae24f8fa6ba008e872f1a85/triggers/manual/paths/invoke?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=57jvEp8pG2_XHV7t4ucP0rToJWlKZAiSbHBMkpNPyTs
+      - name: DEPLOY_SAVEMS
+        type: String
+        value: "false"
+      - name: DEPLOY_EXTENDED_FLOW
+        type: String
+        value: "false"

@@ -1,0 +1,12 @@
+{
+  "cluster": "vis-internal-docker-ecs-cluster",
+  "serviceName": "<+serviceVariables.SERVICE_NAME>",
+  "desiredCount": "<+serviceVariables.DESIRED_COUNT>",
+  "loadBalancers": [
+    {
+        "containerName": "<+serviceVariables.TARGET_DEPLOY_ENV>-savems",
+        "containerPort": "8080",
+        "targetGroupArn": "<+targetGroupArn>"
+    }
+  ]
+}

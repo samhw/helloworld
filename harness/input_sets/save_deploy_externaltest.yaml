@@ -1,0 +1,182 @@
+inputSet:
+  name: save_deploy_externaltest
+  tags: {}
+  identifier: save_deploy_externaltest
+  orgIdentifier: VIS
+  projectIdentifier: VDIS
+  pipeline:
+    identifier: vdissavemicroservicedeployment
+    stages:
+      - stage:
+          identifier: ECS_Deploy
+          type: Deployment
+          spec:
+            service:
+              serviceInputs:
+                serviceDefinition:
+                  type: ECS
+                  spec:
+                    variables:
+                      - name: IMAGE_TAG
+                        type: String
+                        value: ""
+                      - name: APP_LOG_LEVEL
+                        type: String
+                        value: INFO
+                      - name: TASK_ROLE_ARN
+                        type: String
+                        default: arn:aws:iam::992588962742:role/externaltest-savems20240611221346498100000004
+                        value: arn:aws:iam::992588962742:role/externaltest-savems20240611221346498100000004
+                      - name: CPU
+                        type: String
+                        value: "1024"
+                      - name: MEMORY
+                        type: String
+                        value: "3000"
+                      - name: TARGET_DEPLOY_ENV
+                        type: String
+                        value: externaltest
+                      - name: TARGET_AWS_ACCOUNT
+                        type: String
+                        value: Prod
+                      - name: NEW_RELIC_APP_NAME
+                        type: String
+                        value: externaltest-savems (prod)
+                      - name: SERVICE_NAME
+                        type: String
+                        value: externaltest-savems
+                      - name: DESIRED_COUNT
+                        type: String
+                        value: "4"
+            environment:
+              environmentRef: Prod
+              infrastructureDefinitions:
+                - identifier: prod_cluster
+            execution:
+              steps:
+                - stepGroup:
+                    identifier: blueGreenDepoyment
+                    variables:
+                      - name: PROD_LISTENER
+                        type: String
+                        value: arn:aws:elasticloadbalancing:us-east-1:992588962742:listener/app/vis-vdis-int-prod-alb/36a7ee9f86636b66/8f1e2c200065cc12
+                      - name: PROD_LISTENER_RULE
+                        type: String
+                        value: arn:aws:elasticloadbalancing:us-east-1:992588962742:listener-rule/app/vis-vdis-int-prod-alb/36a7ee9f86636b66/8f1e2c200065cc12/aa35a60ff04e0133
+                      - name: STAGE_LISTENER
+                        type: String
+                        value: arn:aws:elasticloadbalancing:us-east-1:992588962742:listener/app/vis-vdis-int-prod-alb/36a7ee9f86636b66/ca4befe643bea746
+                      - name: STAGE_LISTENER_RULE
+                        type: String
+                        value: arn:aws:elasticloadbalancing:us-east-1:992588962742:listener-rule/app/vis-vdis-int-prod-alb/36a7ee9f86636b66/ca4befe643bea746/468a1ba1b71a593e
+                    steps:
+                      - step:
+                          identifier: EcsBlueGreenCreateService
+                          type: EcsBlueGreenCreateService
+                          spec:
+                            loadBalancer: vis-vdis-int-prod-alb
+      - stage:
+          identifier: ECS_Kafka_Deploy
+          type: Deployment
+          spec:
+            service:
+              serviceInputs:
+                serviceDefinition:
+                  type: ECS
+                  spec:
+                    variables:
+                      - name: IMAGE_TAG
+                        type: String
+                        value: ""
+                      - name: APP_LOG_LEVEL
+                        type: String
+                        value: INFO
+                      - name: TASK_ROLE_ARN
+                        type: String
+                        default: arn:aws:iam::992588962742:role/externaltest-savems20240611221346498100000004
+                        value: arn:aws:iam::992588962742:role/externaltest-savems20240611221346498100000004
+                      - name: CPU
+                        type: String
+                        value: "1024"
+                      - name: MEMORY
+                        type: String
+                        value: "3000"
+                      - name: TARGET_DEPLOY_ENV
+                        type: String
+                        value: externaltest
+                      - name: TARGET_AWS_ACCOUNT
+                        type: String
+                        value: Prod
+                      - name: NEW_RELIC_APP_NAME
+                        type: String
+                        value: externaltest-savems-extended-flow (prod)
+                      - name: SERVICE_NAME
+                        type: String
+                        value: externaltest-savems-extended-flow
+                      - name: DESIRED_COUNT
+                        type: String
+                        value: "3"
+                      - name: MAXIMUM_PERCENT
+                        type: String
+                        value: "200"
+                      - name: SPRING_DYNAMODB_ENDPOINT
+                        type: String
+                        value: https://dynamodb.us-east-1.amazonaws.com
+                      - name: SPRING_KAFKA_BOOTSTRAP_SERVERS
+                        type: String
+                        value: broker1.kafka-staging.uscis.dhs.gov:9093,broker2.kafka-staging.uscis.dhs.gov:9093,broker3.kafka-staging.uscis.dhs.gov:9093,broker4.kafka-staging.uscis.dhs.gov:9093,broker5.kafka-staging.uscis.dhs.gov:9093
+                      - name: SPRING_KAFKA_PRODUCER_BOOTSTRAP_SERVERS
+                        type: String
+                        value: broker1.kafka-staging.uscis.dhs.gov:9093,broker2.kafka-staging.uscis.dhs.gov:9093,broker3.kafka-staging.uscis.dhs.gov:9093,broker4.kafka-staging.uscis.dhs.gov:9093,broker5.kafka-staging.uscis.dhs.gov:9093
+                      - name: ADDITIONAL_PROFILE_TOGGLES
+                        type: String
+                        value: kafka-enabled
+                      - name: AVAILABILITY_ZONE_REBALANCING
+                        type: String
+                        default: DISABLED
+                        value: <+input>.default(DISABLED).allowedValues(DISABLED,ENABLED,null)
+      - stage:
+          identifier: Deployment_Marker
+          type: CI
+          spec:
+            execution:
+              steps:
+                - step:
+                    identifier: New_Relic_Deployment_Marker
+                    template:
+                      templateInputs:
+                        type: Run
+                        spec:
+                          envVariables:
+                            ENTITY_GUID: MTEyMTM1N3xBUE18QVBQTElDQVRJT058NTQ5MzUzODYx
+                            APP_ENV: externaltest
+      - stage:
+          identifier: Keystore_Monitor
+          type: CI
+          variables:
+            - name: DEPLOY_WEBHOOK_URL
+              type: String
+              value: https://default5e41ee740d2d4a728975998ce83205e.b.environment.api.gov.powerplatform.microsoft.us:443/powerautomate/automations/direct/workflows/3d4988cc315d48589bad9ce3de1ca8d3/triggers/manual/paths/invoke?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=uEahRPhoLlzWJtDWPXa0BgOTJfR0gYbx_9lvSjK9UXI
+    properties:
+      ci:
+        codebase:
+          build:
+            type: branch
+            spec:
+              branch: <+pipeline.branch>
+    variables:
+      - name: RUN_CI
+        type: String
+        value: "false"
+      - name: DEPLOY_ENV
+        type: String
+        value: externaltest
+      - name: DEPLOY_WEBHOOK_URL
+        type: String
+        value: https://default5e41ee740d2d4a728975998ce83205e.b.environment.api.gov.powerplatform.microsoft.us:443/powerautomate/automations/direct/workflows/a301ee27be1249c89764b012c8d2c1c6/triggers/manual/paths/invoke?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=BmswcmbBrnTdIQrIBIOkTAJtyIYvTqHuh5vqSQ7tjRA
+      - name: DEPLOY_SAVEMS
+        type: String
+        value: "false"
+      - name: DEPLOY_EXTENDED_FLOW
+        type: String
+        value: "false"

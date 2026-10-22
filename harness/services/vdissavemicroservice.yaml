@@ -1,0 +1,92 @@
+service:
+  name: vdis-save-micro-service
+  identifier: vdissavemicroservice
+  orgIdentifier: VIS
+  projectIdentifier: VDIS
+  serviceDefinition:
+    spec:
+      manifests:
+        - manifest:
+            identifier: task_def
+            type: EcsTaskDefinition
+            spec:
+              store:
+                type: Github
+                spec:
+                  connectorRef: org.VIS_GIT_Organization_Connector
+                  gitFetchType: Branch
+                  paths:
+                    - .harness/services/task_definition.json
+                  repoName: pcim-save-micro-service
+                  branch: <+pipeline.branch>
+        - manifest:
+            identifier: service_def
+            type: EcsServiceDefinition
+            spec:
+              store:
+                type: Github
+                spec:
+                  connectorRef: org.VIS_GIT_Organization_Connector
+                  gitFetchType: Branch
+                  paths:
+                    - .harness/services/service_definition.json
+                  repoName: pcim-save-micro-service
+                  branch: <+pipeline.branch>
+      variables:
+        - name: IMAGE_TAG
+          type: String
+          description: ""
+          required: true
+          value: <+input>
+        - name: APP_LOG_LEVEL
+          type: String
+          description: ""
+          required: false
+          value: <+input>.default(DEBUG)
+        - name: TASK_ROLE_ARN
+          type: String
+          default: arn:aws:iam::790298132094:role/devtest-savems20241030114025133200000006
+          description: ""
+          required: true
+          value: <+input>.default(arn:aws:iam::790298132094:role/devtest-savems20241030114025133200000006).allowedValues(arn:aws:iam::790298132094:role/devtest-savems20241030114025133200000006,arn:aws:iam::790298132094:role/systest-savems20240909223735147100000004,arn:aws:iam::992588962742:role/externaltest-savems20240611221346498100000004,arn:aws:iam::992588962742:role/preview-savems20241015123531741800000004,arn:aws:iam::992588962742:role/prod-savems20240402175636933800000004)
+        - name: CPU
+          type: String
+          description: ""
+          required: true
+          value: <+input>.allowedValues(256,1024)
+        - name: MEMORY
+          type: String
+          description: ""
+          required: true
+          value: <+input>.allowedValues(1536,3000)
+        - name: TARGET_DEPLOY_ENV
+          type: String
+          description: ""
+          required: true
+          value: <+input>.allowedValues(devtest,systest,externaltest,preview,prod)
+        - name: TARGET_AWS_ACCOUNT
+          type: String
+          description: ""
+          required: true
+          value: <+input>.allowedValues(NonProd,Prod)
+        - name: TIMESTAMP
+          type: String
+          description: ""
+          required: true
+          value: <+input>
+        - name: NEW_RELIC_APP_NAME
+          type: String
+          description: ""
+          required: true
+          value: <+input>.allowedValues(devtest-savems (nonprod),systest-savems (nonprod),externaltest-savems (prod),preview-savems (prod),prod-savems (prod))
+        - name: SERVICE_NAME
+          type: String
+          description: ""
+          required: true
+          value: <+input>
+        - name: DESIRED_COUNT
+          type: String
+          description: ""
+          required: true
+          value: <+input>
+    type: ECS

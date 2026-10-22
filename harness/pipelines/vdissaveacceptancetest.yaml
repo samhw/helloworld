@@ -1,0 +1,138 @@
+pipeline:
+  name: vdis-save-acceptance-test
+  identifier: vdissaveacceptancetest
+  projectIdentifier: VDIS
+  orgIdentifier: VIS
+  tags: {}
+  properties:
+    ci:
+      codebase:
+        connectorRef: org.VIS_GIT_Organization_Connector
+        repoName: pcim-save-micro-service
+        build:
+          type: branch
+          spec:
+            branch: <+pipeline.branch>
+  variables:
+    - name: ENVIRONMENT_NAME
+      type: String
+      description: Environment to run pipeline.
+      required: true
+      value: <+input>.allowedValues(devtest,systest,externaltest,preview,prod)
+      default: devtest
+    - name: URL_ENV
+      type: String
+      description: populated if env is present in url
+      required: true
+      value: <+<+pipeline.variables.ENVIRONMENT_NAME>=="prod"?"":"<+pipeline.variables.ENVIRONMENT_NAME>/">
+      default: devtest
+    - name: TEST_WARM_STACK
+      type: String
+      description: Environment to run pipeline.
+      required: true
+      value: <+input>.allowedValues(true,false)
+      default: "false"
+    - name: AWS_ENV
+      type: String
+      description: ""
+      required: true
+      value: <+<+pipeline.variables.ENVIRONMENT_NAME>=~["externaltest", "preview", "prod"]?"prod":"nonprod">
+    - name: AWS_ASSUME_ROLE
+      type: String
+      description: ""
+      required: true
+      value: <+<+pipeline.variables.AWS_ENV>=="prod"?"arn:aws:iam::992588962742:role/JenkinsInstanceRole":"arn:aws:iam::790298132094:role/JenkinsInstanceRole">
+    - name: CLIENT_ID
+      type: String
+      value: <+secrets.getValue("hashicorpvault://vdis_<+pipeline.variables.AWS_ENV>_vault_connector/config/vis/apigee#AUTH_CLIENT_ID")>
+    - name: CLIENT_SECRET
+      type: String
+      value: <+secrets.getValue("hashicorpvault://vdis_<+pipeline.variables.AWS_ENV>_vault_connector/config/vis/apigee#AUTH_CLIENT_SECRET")>
+    - name: PATH_PREFIX
+      type: String
+      value: <+<+pipeline.variables.TEST_WARM_STACK>=="true"?"vdis/save/<+pipeline.variables.URL_ENV>warm":"vdis/save/<+pipeline.variables.URL_ENV>">
+  stages:
+    - stage:
+        name: JMeter Run Test
+        identifier: JMeter_Run_Test
+        description: ""
+        type: CI
+        spec:
+          cloneCodebase: true
+          caching:
+            enabled: false
+            override: true
+            paths: []
+          infrastructure:
+            type: KubernetesDirect
+            spec:
+              connectorRef: org.orgprodkubernetesvis
+              namespace: harness-delegate-ng
+              serviceAccountName: harness-vis-delegate
+              automountServiceAccountToken: true
+              tolerations:
+                - effect: NoSchedule
+                  key: Group-Name
+                  operator: Equal
+                  value: karp-critical-cicd
+              nodeSelector:
+                eid-platform/node-lifecycle: karp-critical-cicd
+              imagePullPolicy: IfNotPresent
+              harnessImageConnectorRef: account.acct_ecr_eid_connector_prod
+              os: Linux
+          sharedPaths:
+            - /run
+            - /var/run
+            - /shared/customer_artifacts/certificates
+          buildIntelligence:
+            enabled: false
+          execution:
+            steps:
+              - step:
+                  name: AWS Role Assumption
+                  identifier: AWS_Role_Assumption
+                  template:
+                    templateRef: account.AWS_Role_Assumption
+                    versionLabel: "2.0"
+                    gitBranch: main
+                    templateInputs:
+                      type: Run
+                      spec:
+                        envVariables:
+                          ROLE_TO_ASSUME: <+pipeline.variables.AWS_ASSUME_ROLE>
+              - step:
+                  type: Run
+                  name: Download Acceptance Tests
+                  identifier: Download_Acceptance_Tests
+                  spec:
+                    connectorRef: org.viscoreinfraservicesnexus
+                    image: <+variable.org.Harness_Docker_Base_Latest>
+                    shell: Bash
+                    command: |-
+                      crossing-go get s3://vdis-<+pipeline.variables.AWS_ENV>/vdis-testdata/acceptancetest/savems-acceptance-tests.jmx
+                      # Define the environment variable
+                      ENVIRONMENT=<+pipeline.variables.ENVIRONMENT_NAME>
+                      REQUEST_HOST="uscis-dev.api-nonprod.uscis.dhs.gov"
+                      # Set REQUEST_HOST based on the environment
+                      if [[ "$ENVIRONMENT" == "preview" || "$ENVIRONMENT" == "externaltest" ]]; then
+                          REQUEST_HOST="uscis-int.api.uscis.dhs.gov"
+                      elif [[ "$ENVIRONMENT" == "prod" ]]; then
+                          REQUEST_HOST="uscis-prod.api.uscis.dhs.gov"
+                      fi
+                    outputVariables:
+                      - name: REQUEST_HOST
+                        type: String
+                        value: REQUEST_HOST
+              - step:
+                  name: JMeter Acceptance Test
+                  identifier: JMeter_Acceptance_Test
+                  template:
+                    templateRef: org.JMeter_Tests
+                    versionLabel: v0.0.1
+                    gitBranch: main
+                    templateInputs:
+                      type: Run
+                      spec:
+                        envVariables:
+                          jmeterJmxFilePath: savems-acceptance-tests.jmx
+                          jmeterFlags: "-JREQUEST_HOST=<+execution.steps.Download_Acceptance_Tests.output.outputVariables.REQUEST_HOST>  -JPATH_PREFIX=<+pipeline.variables.PATH_PREFIX> -JAUTH_CLIENT_ID=<+pipeline.variables.CLIENT_ID> -JAUTH_CLIENT_SECRET=<+pipeline.variables.CLIENT_SECRET>"

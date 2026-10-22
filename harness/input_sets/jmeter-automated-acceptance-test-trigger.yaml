@@ -1,0 +1,20 @@
+inputSet:
+  name: jmeter-automated-acceptance-test-trigger
+  identifier: jmeterautomatedacceptancetesttrigger
+  orgIdentifier: VIS
+  projectIdentifier: VDIS
+  pipeline:
+    identifier: vdissavesmoketest
+    variables:
+      - name: ENVIRONMENT_NAME
+        type: String
+        value: <+eventPayload.ENVIRONMENT_NAME>
+        default: devtest
+      - name: TEST_WARM_STACK
+        type: String
+        value: <+eventPayload.TEST_WARM_STACK>
+        default: "false"
+      - name: jmeterJmxFilePath
+        type: String
+        value: savems-acceptance-tests.jmx
+        default: savems-acceptance-tests.jmx
