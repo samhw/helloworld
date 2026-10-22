@@ -1,0 +1,28 @@
+trigger:
+  name: Push to develop
+  identifier: Push_Develop
+  enabled: true
+  encryptedWebhookSecretIdentifier: ""
+  description: "Runs the build after commits/merges land on develop"
+  tags: {}
+  orgIdentifier: VIS
+  stagesToExecute: []
+  projectIdentifier: VDIS
+  pipelineIdentifier: vdissavemicroservicebuild
+  source:
+    type: Webhook
+    spec:
+      type: Github
+      spec:
+        type: Push
+        spec:
+          connectorRef: pcimsavemicroservice
+          autoAbortPreviousExecutions: false
+          payloadConditions:
+            - key: targetBranch
+              operator: Equals
+              value: develop
+          headerConditions: []
+  pipelineBranchName: <+trigger.branch>
+  inputSetRefs:
+    - Pull_Request
