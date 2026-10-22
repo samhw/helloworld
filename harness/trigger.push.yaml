@@ -26,3 +26,19 @@ trigger:
   pipelineBranchName: <+trigger.branch>
   inputSetRefs:
     - Pull_Request
+
+
+=======
+
+
+Nothing in Harness builds develop automatically after a merge.
+there is a PR trigger already, 
+we can add another trigger to build from the develop branch automatically after a push
+
+A trigger can't be stored inside vdissavemicroservicebuild.yaml.
+The pipeline YAML format has no section for triggers. A pipeline only has properties, variables, stages, notificationRules and so on.
+
+we can save it in
+.harness/triggers/vdissavemicroservicebuild/Push_Develop_Footest.yaml. 
+It gets reviewed in PRs and tracked in history, but Harness doesn't read it, 
+so you still paste it into Triggers → YAML yourself. 
